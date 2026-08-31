@@ -1,0 +1,9 @@
+{
+  "fusion": {
+    "min_sqi": 0.55,
+    "min_good_sqi_fraction": 0.5
+  },
+  "rppg": {
+    "window_sec": 12.0
+  }
+}

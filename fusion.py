@@ -22,6 +22,8 @@ from dataclasses import dataclass, field, asdict
 
 import numpy as np
 
+from config import CONFIG
+
 
 @dataclass
 class FeatureFrame:
@@ -43,12 +45,16 @@ class FeatureFrame:
 class SessionState:
     """Rolling session state with windowed descriptive indices."""
 
-    # An index is reported only when its inputs are trustworthy. These are the
-    # gates; below them the UI shows "insufficient signal", not a number.
-    MIN_FACE_VIS = 0.6      # fraction of frames with a detected face
-    MIN_SQI = 0.35          # rPPG signal quality floor
+    # An index is reported only when its inputs are trustworthy. The gates now
+    # live in config.py (FusionConfig) so WP8b can tune them per stratum and
+    # every session can record which values it used. These class attributes
+    # remain as the documented defaults and as a compatibility shim.
+    MIN_FACE_VIS = CONFIG.fusion.min_face_vis
+    MIN_SQI = CONFIG.fusion.min_sqi
 
-    def __init__(self, window_s: float = 30.0, fps: float = 2.0):
+    def __init__(self, window_s: float = None, fps: float = 2.0, cfg=None):
+        self.cfg = (cfg or CONFIG).fusion
+        window_s = self.cfg.window_s if window_s is None else window_s
         self.window_s = window_s
         # maxlen must be sized by the rate add() is actually called at. add()
         # runs once per captured frame, so at 30 fps a maxlen of window_s*2
@@ -74,7 +80,7 @@ class SessionState:
         face_ok = self._series("quality", "face_detected")
         vis = float(face_ok.mean()) if face_ok.size else 0.0
         out["_face_visibility"] = vis
-        if vis < self.MIN_FACE_VIS:
+        if vis < self.cfg.min_face_vis:
             out["_status"] = "insufficient signal: face not reliably visible"
             return out
         out["_status"] = "ok"
@@ -118,8 +124,9 @@ class SessionState:
         bpm = self._series("physio", "bpm")
         sqi = self._series("physio", "sqi")
         if bpm.size and sqi.size:
-            good = sqi >= self.MIN_SQI
-            if good.sum() >= max(3, 0.3 * sqi.size):
+            good = sqi >= self.cfg.min_sqi
+            if good.sum() >= max(self.cfg.min_good_sqi_frames,
+                                 self.cfg.min_good_sqi_fraction * sqi.size):
                 vals = bpm[good]
                 out["pulse"] = {
                     "bpm_median": float(np.median(vals)),

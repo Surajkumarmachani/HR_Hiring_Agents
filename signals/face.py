@@ -18,6 +18,7 @@ from collections import deque
 
 import numpy as np
 
+from config import CONFIG
 from signals import models
 
 from .au_map import AU_DEFINITIONS, GAZE_AUS
@@ -98,14 +99,17 @@ class BlinkDetector:
     "blink rate" number.
     """
 
-    def __init__(self, hi=0.55, lo=0.25, min_frames=1):
-        self.hi, self.lo, self.min_frames = hi, lo, min_frames
+    def __init__(self, hi=None, lo=None, min_frames=None, cfg=None):
+        c = (cfg or CONFIG).face
+        self.hi = c.blink_hi if hi is None else hi
+        self.lo = c.blink_lo if lo is None else lo
+        self.min_frames = c.blink_min_frames if min_frames is None else min_frames
         self.closed = False
         self.run = 0
         self.count = 0
-        self.durations = deque(maxlen=64)
+        self.durations = deque(maxlen=c.blink_history)
         self.last_blink_t = None
-        self.intervals = deque(maxlen=64)
+        self.intervals = deque(maxlen=c.blink_history)
 
     def update(self, au45: float, t: float):
         if not self.closed and au45 >= self.hi:
@@ -137,34 +141,36 @@ class BlinkDetector:
 
 
 class FaceAnalyzer:
-    def __init__(self, model_path: str = None, fps: float = 30.0):
+    def __init__(self, model_path: str = None, fps: float = 30.0, cfg=None):
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision
 
-        path = ensure_model(model_path or MODEL_PATH)
+        self._cfg_root = cfg or CONFIG      # kept so reset() can rebuild sub-objects
+        self.cfg = self._cfg_root.face
+        path = ensure_model(model_path)
         opts = vision.FaceLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=path),
             running_mode=vision.RunningMode.VIDEO,
             num_faces=1,
             output_face_blendshapes=True,
             output_facial_transformation_matrixes=True,
-            min_face_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_face_detection_confidence=self.cfg.min_detection_confidence,
+            min_tracking_confidence=self.cfg.min_tracking_confidence,
         )
         self._mp = mp
         self.landmarker = vision.FaceLandmarker.create_from_options(opts)
         self.fps = fps
-        self.blink = BlinkDetector()
+        self.blink = BlinkDetector(cfg=self._cfg_root)
         self._prev_yaw = None
         self._prev_pitch = None
-        self.head_motion = deque(maxlen=int(fps * 5))
-        self.gaze_on_camera = deque(maxlen=int(fps * 30))
+        self.head_motion = deque(maxlen=int(fps * self.cfg.head_motion_window_sec))
+        self.gaze_on_camera = deque(maxlen=int(fps * self.cfg.gaze_window_sec))
 
     def reset(self):
         """Clear blink counts, motion and gaze history. Keeps the loaded
         model -- re-creating the landmarker would stall the capture loop."""
-        self.blink = BlinkDetector()
+        self.blink = BlinkDetector(cfg=self._cfg_root)
         self._prev_yaw = None
         self._prev_pitch = None
         self.head_motion.clear()
@@ -219,14 +225,17 @@ class FaceAnalyzer:
         f["gaze_x"], f["gaze_y"] = gaze_x, gaze_y
         f["gaze_magnitude"] = math.hypot(gaze_x, gaze_y)
         # "On camera" = eyes near-centred AND head roughly frontal.
-        on_cam = (f["gaze_magnitude"] < 0.25 and abs(yaw) < 20 and abs(pitch) < 20)
+        on_cam = (f["gaze_magnitude"] < self.cfg.gaze_on_camera_max_magnitude
+                  and abs(yaw) < self.cfg.gaze_on_camera_max_yaw_deg
+                  and abs(pitch) < self.cfg.gaze_on_camera_max_pitch_deg)
         self.gaze_on_camera.append(1.0 if on_cam else 0.0)
         f["gaze_on_camera_ratio"] = float(np.mean(self.gaze_on_camera))
 
         # ---- expressivity ----------------------------------------------
         base_aus = [f[c] for c in AU_DEFINITIONS if c in f]
         f["au_activation_sum"] = float(np.sum(base_aus))
-        f["au_active_count"] = int(np.sum(np.asarray(base_aus) > 0.15))
+        f["au_active_count"] = int(np.sum(np.asarray(base_aus)
+                                          > self.cfg.au_active_threshold))
         # A Duchenne (felt) smile pairs AU12 with AU6. AU12 alone is the
         # social/polite smile. This distinction is well replicated -- but it
         # says something about the smile, not about the person.

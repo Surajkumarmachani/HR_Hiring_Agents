@@ -18,6 +18,7 @@ from collections import deque
 
 import numpy as np
 
+from config import CONFIG
 from signals import models
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/pose_landmarker/"
@@ -36,26 +37,27 @@ def ensure_model(path: str = None) -> str:
 
 
 class BodyAnalyzer:
-    def __init__(self, fps: float = 30.0, model_path: str = None):
+    def __init__(self, fps: float = 30.0, model_path: str = None, cfg=None):
         import mediapipe as mp
         from mediapipe.tasks import python as mp_python
         from mediapipe.tasks.python import vision
 
-        path = ensure_model(model_path or MODEL_PATH)
+        self.cfg = (cfg or CONFIG).body
+        path = ensure_model(model_path)
         opts = vision.PoseLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=path),
             running_mode=vision.RunningMode.VIDEO,
             num_poses=1,
-            min_pose_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
+            min_pose_detection_confidence=self.cfg.min_detection_confidence,
+            min_tracking_confidence=self.cfg.min_tracking_confidence,
         )
         self._mp = mp
         self.landmarker = vision.PoseLandmarker.create_from_options(opts)
         self.fps = fps
-        self.wrist_hist = deque(maxlen=int(fps * 5))
-        self.shoulder_hist = deque(maxlen=int(fps * 5))
-        self.hands_visible = deque(maxlen=int(fps * 30))
-        self.self_touch = deque(maxlen=int(fps * 30))
+        self.wrist_hist = deque(maxlen=int(fps * self.cfg.motion_window_sec))
+        self.shoulder_hist = deque(maxlen=int(fps * self.cfg.motion_window_sec))
+        self.hands_visible = deque(maxlen=int(fps * self.cfg.ratio_window_sec))
+        self.self_touch = deque(maxlen=int(fps * self.cfg.ratio_window_sec))
         self._base_shoulder_w = None
 
     def reset(self):
@@ -97,7 +99,7 @@ class BodyAnalyzer:
         f["shoulder_tilt_deg"] = tilt
         # Proximity proxy for FACS 57/58. Shoulder width in normalised image
         # coords grows as the subject leans towards the camera.
-        if self._base_shoulder_w is None and sh_w > 0.05:
+        if self._base_shoulder_w is None and sh_w > self.cfg.min_shoulder_width:
             self._base_shoulder_w = sh_w
         f["lean_index"] = float(sh_w / self._base_shoulder_w - 1.0) \
             if self._base_shoulder_w else 0.0
@@ -109,7 +111,8 @@ class BodyAnalyzer:
         else:
             f["postural_sway"] = 0.0
 
-        wr_vis = vis(L_WR) > 0.5 or vis(R_WR) > 0.5
+        wr_vis = (vis(L_WR) > self.cfg.wrist_visibility_threshold
+                  or vis(R_WR) > self.cfg.wrist_visibility_threshold)
         self.hands_visible.append(1.0 if wr_vis else 0.0)
         f["hands_visible_ratio"] = float(np.mean(self.hands_visible))
 

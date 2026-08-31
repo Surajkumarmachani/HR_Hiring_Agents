@@ -36,6 +36,8 @@ from collections import deque
 import numpy as np
 from scipy import signal as sps
 
+from config import CONFIG
+
 # Physiological plausibility band for the peak SEARCH: 42-180 BPM.
 LOW_HZ, HIGH_HZ = 0.7, 3.0
 # The bandpass FILTER is deliberately wider than the search band. If they were
@@ -52,13 +54,14 @@ class POSEstimator:
     like. Needs `window_sec` of history before it returns anything.
     """
 
-    def __init__(self, fps: float = 30.0, window_sec: float = 10.0):
+    def __init__(self, fps: float = 30.0, window_sec: float = None, cfg=None):
+        self.cfg = (cfg or CONFIG).rppg
         self.fps = float(fps)
-        self.window_sec = float(window_sec)
+        self.window_sec = float(self.cfg.window_sec if window_sec is None
+                                else window_sec)
         self.n = int(round(self.fps * self.window_sec))
         self.rgb = deque(maxlen=self.n)
-        # POS internal step length: 1.6 s, per the paper
-        self.step = max(4, int(round(1.6 * self.fps)))
+        self.step = max(4, int(round(self.cfg.pos_step_sec * self.fps)))
 
     def reset(self):
         """Empty the RGB buffer. estimate() returns None until ~10 s of new
@@ -95,7 +98,8 @@ class POSEstimator:
 
     def _bandpass(self, x: np.ndarray) -> np.ndarray:
         nyq = self.fps / 2.0
-        low, high = FILT_LOW_HZ / nyq, min(FILT_HIGH_HZ / nyq, 0.99)
+        low, high = (self.cfg.filt_low_hz / nyq,
+                     min(self.cfg.filt_high_hz / nyq, 0.99))
         if not (0 < low < high < 1):
             return x
         b, a = sps.butter(3, [low, high], btype="band")
@@ -128,7 +132,7 @@ class POSEstimator:
         nper = min(len(h), int(self.fps * 8))
         freqs, psd = sps.welch(h, fs=self.fps, nperseg=nper,
                                noverlap=nper // 2, detrend="linear")
-        band = (freqs >= LOW_HZ) & (freqs <= HIGH_HZ)
+        band = (freqs >= self.cfg.search_low_hz) & (freqs <= self.cfg.search_high_hz)
         if not band.any() or psd[band].sum() <= 0:
             return None, 0.0, None
 
@@ -152,14 +156,15 @@ class POSEstimator:
         bpm = float(peak_f * 60.0)
 
         # SQI: power within +/-0.2 Hz of the peak and of its 2nd harmonic
-        near = np.abs(bf - peak_f) <= 0.2
-        harm = np.abs(bf - 2.0 * peak_f) <= 0.2
+        hw = self.cfg.sqi_peak_halfwidth_hz
+        near = np.abs(bf - peak_f) <= hw
+        harm = np.abs(bf - 2.0 * peak_f) <= hw
         sqi = float((bp[near].sum() + bp[harm].sum()) / bp.sum())
 
         return bpm, min(sqi, 1.0), h
 
 
-def skin_mask_rgb_mean(frame_bgr, polygon_pts):
+def skin_mask_rgb_mean(frame_bgr, polygon_pts, cfg=None):
     """Mean RGB inside a polygon ROI, with crude specular/shadow rejection.
 
     frame_bgr: HxWx3 uint8 BGR (OpenCV order)
@@ -168,6 +173,7 @@ def skin_mask_rgb_mean(frame_bgr, polygon_pts):
     """
     import cv2
 
+    c = (cfg or CONFIG).rppg
     h, w = frame_bgr.shape[:2]
     mask = np.zeros((h, w), dtype=np.uint8)
     pts = np.asarray(polygon_pts, dtype=np.int32).reshape(-1, 1, 2)
@@ -177,9 +183,9 @@ def skin_mask_rgb_mean(frame_bgr, polygon_pts):
 
     # Drop blown-out highlights and crushed shadows before averaging.
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    mask[(gray > 245) | (gray < 15)] = 0
+    mask[(gray > c.specular_gray_max) | (gray < c.shadow_gray_min)] = 0
     n = int((mask > 0).sum())
-    if n < 200:                       # too few pixels to average meaningfully
+    if n < c.min_roi_pixels:          # too few pixels to average meaningfully
         return None
 
     b, g, r = cv2.split(frame_bgr)

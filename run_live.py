@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 import cv2
 import numpy as np
 
+from config import CONFIG, Config
 from fusion import FeatureFrame, SessionState
 from signals.au_map import AU_DEFINITIONS
 from signals.rppg import POSEstimator, skin_mask_rgb_mean
@@ -95,7 +96,17 @@ def main():
     ap.add_argument("--no-body", action="store_true", help="skip pose (faster)")
     ap.add_argument("--compact", action="store_true",
                     help="minimal overlay; press d to expand at runtime")
+    ap.add_argument("--config", default=None,
+                    help="JSON config overriding defaults (see config.py)")
+    ap.add_argument("--show-config", action="store_true",
+                    help="print the resolved config and its digest, then exit")
     args = ap.parse_args()
+
+    cfg = Config.from_file(args.config) if args.config else CONFIG
+    if args.show_config:
+        print(json.dumps(cfg.to_dict(), indent=2, sort_keys=True))
+        print(f"\ndigest: {cfg.digest()}")
+        return
 
     if args.make_consent:
         return make_consent(args.consent, args.make_consent)
@@ -116,7 +127,7 @@ def main():
     if not (5 < fps < 120):
         fps = 30.0
 
-    face = FaceAnalyzer(fps=fps)
+    face = FaceAnalyzer(fps=fps, cfg=cfg)
 
     # Body tracking is the optional stage. If its model cannot be fetched or
     # the API shifts under us, the session continues with face + rPPG rather
@@ -125,16 +136,16 @@ def main():
     if not args.no_body:
         try:
             from signals.body import BodyAnalyzer
-            body = BodyAnalyzer(fps=fps)
+            body = BodyAnalyzer(fps=fps, cfg=cfg)
         except Exception as e:
             print(f"[run] body tracking unavailable ({type(e).__name__}: {e})")
             print("[run] continuing with face + rPPG only")
 
     # One estimator per ROI; agreement between them is itself a quality check.
-    rppg = {k: POSEstimator(fps=fps, window_sec=10.0)
+    rppg = {k: POSEstimator(fps=fps, cfg=cfg)
             for k in ("forehead", "cheek_l", "cheek_r")}
 
-    state = SessionState(window_s=30.0, fps=fps)
+    state = SessionState(fps=fps, cfg=cfg)
     t0 = time.time()
     i, last_emit = 0, -1.0
     errors = {}
@@ -151,6 +162,8 @@ def main():
     alpha = min(1.0, 2.0 / (fps + 1.0))
 
     print(f"[run] source={'webcam' if not args.video else args.video} fps={fps:.1f}")
+    print(f"[run] config digest {cfg.digest()}"
+          f"{' (' + args.config + ')' if args.config else ' (defaults)'}")
     print("[run] rPPG needs ~10 s of history before the first pulse estimate.")
 
     while True:
@@ -174,7 +187,7 @@ def main():
         if fdict:
             ff.face = fdict
             for name, est in rppg.items():
-                m = skin_mask_rgb_mean(frame, rois[name])
+                m = skin_mask_rgb_mean(frame, rois[name], cfg=cfg)
                 if m is not None:
                     est.update(m)
             bpms, sqis = [], []
@@ -266,13 +279,26 @@ def main():
         body.close()
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+
+    # The settings that produced these numbers travel WITH them. A feature
+    # file whose thresholds are unknown cannot be compared to any other, and
+    # WP8b's whole job is comparing across strata.
+    df = state.to_dataframe()
+    df["config_digest"] = cfg.digest()
+    sidecar = os.path.splitext(args.out)[0] + ".config.json"
+    with open(sidecar, "w") as fh:
+        json.dump({"config_digest": cfg.digest(),
+                   "config_source": args.config or "defaults",
+                   "config": cfg.to_dict()}, fh, indent=2, sort_keys=True)
+
     try:
-        state.to_dataframe().to_parquet(args.out)
+        df.to_parquet(args.out)
         print(f"[run] {len(state.all_frames)} frames -> {args.out}")
     except Exception as e:
         csv = args.out.replace(".parquet", ".csv")
-        state.to_dataframe().to_csv(csv, index=False)
+        df.to_csv(csv, index=False)
         print(f"[run] parquet unavailable ({e}); wrote {csv}")
+    print(f"[run] config {cfg.digest()} -> {sidecar}")
 
     print("\n--- session indices (descriptive, non-decisional) ---")
     print(json.dumps(state.indices(), indent=2, default=str))

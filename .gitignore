@@ -5,6 +5,7 @@
 # and git history makes deletion-on-withdrawal effectively impossible.
 # ---------------------------------------------------------------------------
 out/*.parquet
+out/*.config.json
 out/consent.json
 out/consent*.json
 out/sessions/
