@@ -1,0 +1,20 @@
+interview-signals v1.1  (31 Aug 2026)
+
+USE THIS ONE. It supersedes v1.0.
+
+Changes from v1.0:
+  - FIXED: body.py imported `mediapipe.solutions`, removed in MediaPipe
+    0.10.30+. v1.0 crashes with ImportError on any run with body tracking
+    enabled. Rewritten against the PoseLandmarker Tasks API.
+  - NEW: `python3 run_live.py --preflight` checks packages, MediaPipe API
+    surface, both model downloads, the rPPG chain, the camera, and live face
+    detection. Run this before any demo.
+  - NEW: crash guards. A failing face or body stage now degrades and the
+    session continues, instead of taking the process down mid-demo.
+  - NEW: build_dictionary.py / build_xlsx.py generate the 155-parameter
+    catalogue straight from the pipeline source.
+  - Demo runbook added to README.md.
+
+Verify you are on v1.1:
+  grep -c "from mediapipe import solutions" signals/body.py     -> 0
+  python3 run_live.py --preflight                               -> runs

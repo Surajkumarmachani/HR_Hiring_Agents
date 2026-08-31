@@ -1,0 +1,535 @@
+<title>Interview Signal Layer</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#f3f5f7; --surface:#ffffff; --surface-2:#eceff2;
+    --ink:#121a22; --ink-2:#4e5a67; --ink-3:#77838f;
+    --rule:#dbe0e6; --rule-strong:#c3cbd3;
+    --accent:#0e6a87; --accent-soft:#e2eef2;
+    --measured:#146b51; --measured-bg:#e3f0eb;
+    --inferred:#8c5a06; --inferred-bg:#f5ece0;
+    --unsupported:#9d3628; --unsupported-bg:#f6e6e3;
+    --shadow:0 1px 2px rgba(18,26,34,.06),0 8px 24px -12px rgba(18,26,34,.12);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0c1116; --surface:#141c25; --surface-2:#1b242e;
+      --ink:#e5ebf1; --ink-2:#98a5b3; --ink-3:#6f7d8b;
+      --rule:#25303b; --rule-strong:#33404d;
+      --accent:#54b9d9; --accent-soft:#132a34;
+      --measured:#45c493; --measured-bg:#10251f;
+      --inferred:#dda748; --inferred-bg:#2a2113;
+      --unsupported:#e37765; --unsupported-bg:#2b1815;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0c1116; --surface:#141c25; --surface-2:#1b242e;
+    --ink:#e5ebf1; --ink-2:#98a5b3; --ink-3:#6f7d8b;
+    --rule:#25303b; --rule-strong:#33404d;
+    --accent:#54b9d9; --accent-soft:#132a34;
+    --measured:#45c493; --measured-bg:#10251f;
+    --inferred:#dda748; --inferred-bg:#2a2113;
+    --unsupported:#e37765; --unsupported-bg:#2b1815;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"Source Serif 4",Georgia,"Times New Roman",serif;
+    font-size:17px; line-height:1.62; margin:0;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1080px;margin:0 auto;padding:0 28px 96px}
+
+  /* ---- masthead ---- */
+  header.mast{
+    border-bottom:2px solid var(--ink); margin-bottom:44px;
+    padding:56px 0 22px;
+  }
+  .kicker{
+    font-family:"IBM Plex Mono",ui-monospace,monospace;
+    font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--accent); font-weight:600; margin:0 0 16px;
+  }
+  h1{
+    font-family:Archivo,"Helvetica Neue",Arial,sans-serif;
+    font-weight:700; font-size:clamp(34px,5.6vw,54px); line-height:1.02;
+    letter-spacing:-.026em; margin:0 0 14px; text-wrap:balance;
+  }
+  .standfirst{
+    font-size:clamp(17px,2.1vw,20px); color:var(--ink-2);
+    max-width:60ch; margin:0 0 22px;
+  }
+  .meta{
+    display:flex; flex-wrap:wrap; gap:8px 22px;
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px;
+    color:var(--ink-3); letter-spacing:.03em;
+  }
+
+  /* ---- section scaffolding: numbered rail ---- */
+  section{margin:0 0 68px; scroll-margin-top:20px}
+  .sec-head{
+    display:grid; grid-template-columns:56px 1fr; gap:18px;
+    align-items:baseline; border-top:1px solid var(--rule-strong);
+    padding-top:14px; margin-bottom:26px;
+  }
+  .sec-num{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; font-weight:600;
+    color:var(--accent); letter-spacing:.08em; padding-top:6px;
+  }
+  h2{
+    font-family:Archivo,sans-serif; font-weight:600;
+    font-size:clamp(23px,3.1vw,31px); letter-spacing:-.019em;
+    line-height:1.14; margin:0; text-wrap:balance;
+  }
+  h3{
+    font-family:Archivo,sans-serif; font-weight:600; font-size:18px;
+    letter-spacing:-.01em; margin:34px 0 10px;
+  }
+  p{max-width:68ch; margin:0 0 15px}
+  .lead{font-size:18.5px; color:var(--ink-2); max-width:66ch}
+  ul,ol{max-width:68ch; padding-left:22px; margin:0 0 15px}
+  li{margin-bottom:7px}
+  strong{font-weight:600}
+  a{color:var(--accent); text-underline-offset:2px; text-decoration-thickness:1px}
+  code{
+    font-family:"IBM Plex Mono",monospace; font-size:.86em;
+    background:var(--surface-2); padding:1px 5px; border-radius:3px;
+  }
+
+  /* ---- validity tier system ---- */
+  .tier{
+    display:inline-flex; align-items:center; gap:6px;
+    font-family:"IBM Plex Mono",monospace; font-size:10.5px; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase;
+    padding:3px 8px; border-radius:3px; white-space:nowrap;
+  }
+  .tier::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .t-m{color:var(--measured);background:var(--measured-bg)}
+  .t-i{color:var(--inferred);background:var(--inferred-bg)}
+  .t-u{color:var(--unsupported);background:var(--unsupported-bg)}
+
+  .verdict{display:grid; gap:14px; margin:26px 0 8px}
+  .vcard{
+    background:var(--surface); border:1px solid var(--rule);
+    border-left:4px solid; border-radius:5px; padding:20px 22px;
+    box-shadow:var(--shadow);
+  }
+  .vcard.m{border-left-color:var(--measured)}
+  .vcard.i{border-left-color:var(--inferred)}
+  .vcard.u{border-left-color:var(--unsupported)}
+  .vcard h3{margin:12px 0 8px; font-size:19px}
+  .vcard p{margin:0 0 10px; font-size:16px}
+  .vcard p:last-child{margin:0}
+
+  /* ---- tables ---- */
+  .tw{overflow-x:auto; margin:20px 0 12px; border:1px solid var(--rule); border-radius:5px; background:var(--surface)}
+  table{border-collapse:collapse; width:100%; font-size:14px;
+        font-family:Archivo,sans-serif; min-width:640px}
+  th{
+    text-align:left; font-weight:600; font-size:10.5px; letter-spacing:.09em;
+    text-transform:uppercase; color:var(--ink-3);
+    padding:11px 14px; border-bottom:1px solid var(--rule-strong);
+    background:var(--surface-2); white-space:nowrap;
+  }
+  td{padding:10px 14px; border-bottom:1px solid var(--rule); vertical-align:top; color:var(--ink-2)}
+  tr:last-child td{border-bottom:none}
+  td:first-child{color:var(--ink); font-weight:500}
+  .mono,td.mono{font-family:"IBM Plex Mono",monospace; font-size:12.5px;
+                font-variant-numeric:tabular-nums; color:var(--ink)}
+  caption{
+    caption-side:top; text-align:left; padding:13px 14px 11px;
+    font-family:Archivo,sans-serif; font-weight:600; font-size:13.5px;
+    color:var(--ink); border-bottom:1px solid var(--rule);
+  }
+  caption .tier{margin-left:8px; vertical-align:1px}
+
+  /* ---- callout ---- */
+  .note{
+    background:var(--surface); border:1px solid var(--rule);
+    border-radius:5px; padding:18px 20px; margin:22px 0;
+  }
+  .note.warn{border-color:var(--unsupported); background:var(--unsupported-bg)}
+  .note .lbl{
+    font-family:"IBM Plex Mono",monospace; font-size:10.5px; font-weight:600;
+    letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+    display:block; margin-bottom:7px;
+  }
+  .note.warn .lbl{color:var(--unsupported)}
+  .note p{margin:0 0 10px; font-size:16px}
+  .note p:last-child{margin:0}
+
+  /* ---- phase timeline ---- */
+  .phases{display:grid; gap:0; margin:24px 0}
+  .phase{
+    display:grid; grid-template-columns:92px 1fr; gap:22px;
+    padding:20px 0; border-top:1px solid var(--rule);
+  }
+  .phase:last-child{border-bottom:1px solid var(--rule)}
+  .ph-when{
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; font-weight:500;
+    color:var(--accent); letter-spacing:.02em; padding-top:3px;
+    font-variant-numeric:tabular-nums;
+  }
+  .ph-when b{display:block; color:var(--ink-3); font-weight:500; font-size:10.5px;
+             letter-spacing:.09em; text-transform:uppercase; margin-top:3px}
+  .phase h3{margin:0 0 7px; font-size:17.5px}
+  .phase p{font-size:15.5px; margin:0 0 9px}
+  .gate{
+    font-family:"IBM Plex Mono",monospace; font-size:12px;
+    color:var(--ink-2); background:var(--surface-2);
+    border-radius:4px; padding:8px 11px; display:block; max-width:68ch;
+  }
+  .gate b{color:var(--ink); font-weight:600}
+
+  footer{
+    border-top:2px solid var(--ink); margin-top:60px; padding-top:20px;
+    font-family:"IBM Plex Mono",monospace; font-size:11.5px; color:var(--ink-3);
+  }
+  footer a{color:var(--ink-2)}
+  footer ol{max-width:none; font-size:11.5px; line-height:1.75}
+
+  @media (max-width:640px){
+    body{font-size:16px}
+    .wrap{padding:0 18px 64px}
+    .sec-head{grid-template-columns:38px 1fr; gap:12px}
+    .phase{grid-template-columns:1fr; gap:8px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="kicker">Build specification · Candidate assessment · India deployment</p>
+  <h1>Interview Signal Layer</h1>
+  <p class="standfirst">A parameter catalogue and phased build plan for real-time facial, kinesic and physiological measurement during interviews — separating what the sensors can actually measure from what the market claims they can.</p>
+  <div class="meta">
+    <span>REV 1.0 · 31 AUG 2026</span>
+    <span>38 ACTION UNITS · 6 SIGNAL GROUPS</span>
+    <span>PREPARED FOR DIGITALCHEMY</span>
+  </div>
+</header>
+
+<section>
+  <div class="sec-head"><div class="sec-num">01</div><h2>Start here: three tiers, not one system</h2></div>
+  <p class="lead">Your brief contains three different kinds of request, and they have wildly different evidence behind them. Building them as one undifferentiated "candidate analysis engine" is the single decision that would sink this product. Separate them at the architecture level and the rest of the plan follows.</p>
+
+  <div class="verdict">
+    <div class="vcard m">
+      <span class="tier t-m">Tier 1 · Measurable</span>
+      <h3>Physical signals you can genuinely extract</h3>
+      <p>Facial action-unit activation, head pose, gaze direction, blink dynamics, upper-body posture and gesture kinematics, vocal prosody, and pulse rate from video (rPPG). These are real measurements of real physical quantities. The starter code measures all of them.</p>
+      <p>Accuracy is bounded and skin-tone dependent — treat every number as an estimate carrying an error bar, never as a fact.</p>
+    </div>
+    <div class="vcard i">
+      <span class="tier t-i">Tier 2 · Weakly inferable</span>
+      <h3>Emotion categories, engagement, arousal</h3>
+      <p>The 2019 review by Barrett and colleagues — the most cited work on this question — concluded that facial movements do <em>not</em> reliably map onto specific emotion categories across people, situations and cultures. A scowl accompanies anger less than 30% of the time, and occurs plenty of times when nobody is angry.</p>
+      <p>You can still compute these. Report them as low-confidence descriptors with visible error bars, never as inputs to a decision.</p>
+    </div>
+    <div class="vcard u">
+      <span class="tier t-u">Tier 3 · Not achievable</span>
+      <h3>Thoughts, honesty, personality traits, hireability</h3>
+      <p><strong>Thought content cannot be read from video.</strong> No system does this — not yours, not anyone's. Remove it from the product definition before it ends up in a pitch deck.</p>
+      <p><strong>Deception detection has failed every controlled test.</strong> Paul Ekman's own Micro-Expression Training Tool was evaluated in 2019: trained participants scored <strong>46.3%</strong> accuracy, untrained <strong>44.0%</strong>, and a deliberately bogus training <strong>47.3%</strong>. All below the 50% coin-flip baseline, with Bayesian evidence for no difference between conditions.</p>
+      <p><strong>Elevated heart rate in an interview means the person is in an interview.</strong> Arousal is the expected physiological state of a job candidate. It carries no information about honesty or competence.</p>
+    </div>
+  </div>
+
+  <div class="note warn">
+    <span class="lbl">The commercial consequence</span>
+    <p>Every vendor that has shipped Tier 3 as a product feature has ended up in the same place: HireVue withdrew facial analysis from its assessments in 2021 after an FTC complaint. The EU banned the category outright. If your differentiator is Tier 3, your differentiator is a liability with a delivery date on it.</p>
+    <p>The version of this product that survives contact with a procurement team, an audit, and a rejected candidate's lawyer is the one where Tier 1 measurement feeds <em>coaching and interview quality</em>, and a validated structured-interview process makes the <em>decision</em>. Section 04 lays that out.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><div class="sec-num">02</div><h2>Parameter catalogue</h2></div>
+  <p class="lead">Six signal groups, roughly 120 features per second. Group A alone gives you the "at least 30 micro-expressions" you asked for — 38, in fact, all from the upper and mid face plus rigid head motion, which is the region you specified.</p>
+
+  <h3>A · Facial action units (FACS)</h3>
+  <p>The Facial Action Coding System decomposes any expression into anatomically-defined muscle movements. This is the right substrate: AUs are physical facts about muscle contraction, whereas "happy" is an interpretation layered on top. Measure AUs, and defer interpretation as long as you possibly can.</p>
+
+  <div class="tw"><table>
+    <caption>Upper and mid face — 8 units <span class="tier t-m">Measurable</span></caption>
+    <thead><tr><th>Code</th><th>Muscle action</th><th>Reads as, in context</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">AU01</td><td>Inner brow raiser</td><td>Component of surprise and of concern; also pure listening behaviour</td></tr>
+      <tr><td class="mono">AU02</td><td>Outer brow raiser</td><td>Surprise, emphasis, conversational punctuation</td></tr>
+      <tr><td class="mono">AU04</td><td>Brow lowerer</td><td>Concentration, effortful recall, confusion, bright light</td></tr>
+      <tr><td class="mono">AU05</td><td>Upper lid raiser</td><td>Alertness, surprise, startle</td></tr>
+      <tr><td class="mono">AU06</td><td>Cheek raiser (orbicularis oculi)</td><td>The Duchenne marker — with AU12, distinguishes felt from social smiling</td></tr>
+      <tr><td class="mono">AU07</td><td>Lid tightener</td><td>Scrutiny, discomfort, squinting at a screen</td></tr>
+      <tr><td class="mono">AU09</td><td>Nose wrinkler</td><td>Disgust component; rare and high-signal when it appears</td></tr>
+      <tr><td class="mono">AU45</td><td>Blink</td><td>Rate and inter-blink interval track cognitive load, not truthfulness</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="tw"><table>
+    <caption>Lower face — 17 units <span class="tier t-m">Measurable</span></caption>
+    <thead><tr><th>Code</th><th>Muscle action</th><th>Code</th><th>Muscle action</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">AU10</td><td>Upper lip raiser</td><td class="mono">AU24</td><td>Lip pressor</td></tr>
+      <tr><td class="mono">AU12</td><td>Lip corner puller (smile)</td><td class="mono">AU25</td><td>Lips part</td></tr>
+      <tr><td class="mono">AU14</td><td>Dimpler</td><td class="mono">AU26</td><td>Jaw drop</td></tr>
+      <tr><td class="mono">AU15</td><td>Lip corner depressor</td><td class="mono">AU28</td><td>Lip suck</td></tr>
+      <tr><td class="mono">AU16</td><td>Lower lip depressor</td><td class="mono">AU29</td><td>Jaw thrust</td></tr>
+      <tr><td class="mono">AU17</td><td>Chin raiser</td><td class="mono">AU30</td><td>Jaw sideways</td></tr>
+      <tr><td class="mono">AU18</td><td>Lip pucker</td><td class="mono">AU33</td><td>Cheek puff</td></tr>
+      <tr><td class="mono">AU20</td><td>Lip stretcher</td><td class="mono">AU36</td><td>Tongue show</td></tr>
+      <tr><td class="mono">AU22</td><td>Lip funneler</td><td class="mono">AU38</td><td>Mouth sideways</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="tw"><table>
+    <caption>Rigid head and gaze — 12 units <span class="tier t-m">Measurable</span></caption>
+    <thead><tr><th>Codes</th><th>Action</th><th>Derived from</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">AU51 / AU52</td><td>Head turn left / right</td><td>Yaw from the 4×4 face transform matrix</td></tr>
+      <tr><td class="mono">AU53 / AU54</td><td>Head up / down</td><td>Pitch — nod detection lives here</td></tr>
+      <tr><td class="mono">AU55 / AU56</td><td>Head tilt left / right</td><td>Roll</td></tr>
+      <tr><td class="mono">AU57 / AU58</td><td>Head forward / back</td><td>Shoulder-width scale change (proximity proxy)</td></tr>
+      <tr><td class="mono">AU61–AU64</td><td>Eyes left / right / up / down</td><td>Ocular blendshapes, independent of head pose</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note">
+    <span class="lbl">Derived facial features worth more than the raw AUs</span>
+    <p><strong>Bilateral asymmetry</strong> (|left − right| per AU) — spontaneous expressions are more symmetric than posed ones, as a population tendency. <strong>Duchenne index</strong> = min(AU06, AU12), separating felt from polite smiling. <strong>Onset/offset velocity</strong> — true micro-expressions last 40–500 ms; anything held longer is a normal expression, and your 30 fps camera can only resolve the slower half of that range. <strong>Activation entropy</strong> across AUs, as an expressive-range measure.</p>
+  </div>
+
+  <h3>B · Upper-body kinesics</h3>
+  <div class="tw"><table>
+    <caption>Posture and gesture — 9 features <span class="tier t-m">Measurable</span> <span class="tier t-i">Interpretation weak</span></caption>
+    <thead><tr><th>Feature</th><th>Definition</th><th>Principal confound</th></tr></thead>
+    <tbody>
+      <tr><td>Shoulder tilt</td><td>Angle of the shoulder line</td><td>Chair design, desk height</td></tr>
+      <tr><td>Lean index</td><td>Shoulder width vs. session baseline</td><td>Laptop vs. desktop distance</td></tr>
+      <tr><td>Postural sway</td><td>Shoulder-midpoint displacement energy / 5 s</td><td>Swivel chairs</td></tr>
+      <tr><td>Gesture energy</td><td>Normalised wrist velocity</td><td>Frame crop — many webcams cut hands off entirely</td></tr>
+      <tr><td>Gesture amplitude</td><td>Wrist positional spread</td><td>Strong cultural variation</td></tr>
+      <tr><td>Hands-visible ratio</td><td>Fraction of frames with wrists in frame</td><td>Camera framing, not behaviour</td></tr>
+      <tr><td>Self-touch (adaptors)</td><td>Hand-to-face/neck contact frequency</td><td>Rises with arousal — <strong>not</strong> a deception cue</td></tr>
+      <tr><td>Head nod / shake rate</td><td>Periodicity in pitch / yaw</td><td>The Indian head bob is a distinct gesture your model will misread</td></tr>
+      <tr><td>Motion energy</td><td>Aggregate upper-body movement</td><td>Bandwidth-induced video stutter</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>C · Physiological (rPPG)</h3>
+  <p>Remote photoplethysmography recovers the cardiac pulse from sub-perceptual colour changes in facial skin as blood volume varies. The physics is sound and the implementation in your starter code is validated. The field performance is the problem.</p>
+
+  <div class="tw"><table>
+    <caption>Pulse metrics and their honest limits</caption>
+    <thead><tr><th>Metric</th><th>Status</th><th>Reality</th></tr></thead>
+    <tbody>
+      <tr><td>Pulse rate (BPM)</td><td><span class="tier t-m">Measurable</span></td><td>≈5.5 BPM mean absolute error on in-the-wild webcam video, r = 0.58. Better under controlled light; worse while talking.</td></tr>
+      <tr><td>Signal quality index</td><td><span class="tier t-m">Measurable</span></td><td>Mandatory. Spectral peak concentration. Below 0.35, discard — do not display a number.</td></tr>
+      <tr><td>Respiration rate</td><td><span class="tier t-i">Marginal</span></td><td>Extractable from the pulse envelope; needs a still subject.</td></tr>
+      <tr><td>Pulse rate change vs. baseline</td><td><span class="tier t-i">Marginal</span></td><td>More robust than absolute BPM. Still confounded by posture change and speaking.</td></tr>
+      <tr><td>HRV (SDNN, RMSSD, LF/HF)</td><td><span class="tier t-u">Do not ship</span></td><td>Requires beat-level peak timing that webcam video in a talking-head scenario does not deliver. Use a chest strap or drop it.</td></tr>
+      <tr><td>Stress / deception index</td><td><span class="tier t-u">Do not ship</span></td><td>No validated mapping exists from pulse to either construct in this setting.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note warn">
+    <span class="lbl">The bias that will end the project if you skip it</span>
+    <p>rPPG accuracy degrades measurably with darker skin tones — melanin absorbs the green wavelengths the signal lives in. AU detectors carry the same problem from their training distributions. In an Indian hiring context, spanning the full Fitzpatrick range, an unaudited pipeline produces systematically noisier measurements for a subset of candidates. If those measurements touch a decision, that is disparate impact with a paper trail. Phase 4 is not optional.</p>
+  </div>
+
+  <h3>D · Vocal prosody</h3>
+  <p>Underrated, and cheaper to compute than everything above. Prosody predicts communication ratings better than facial signals do, and is far less confounded by camera placement.</p>
+  <div class="tw"><table>
+    <caption>Paralinguistic features <span class="tier t-m">Measurable</span></caption>
+    <thead><tr><th>Family</th><th>Features</th></tr></thead>
+    <tbody>
+      <tr><td>Pitch</td><td>F0 mean, range, contour slope, declination</td></tr>
+      <tr><td>Voice quality</td><td>Jitter, shimmer, harmonics-to-noise ratio (Praat algorithms)</td></tr>
+      <tr><td>Tempo</td><td>Speech rate, articulation rate, pause count and duration</td></tr>
+      <tr><td>Disfluency</td><td>Filled pauses, repairs, restarts</td></tr>
+      <tr><td>Interaction</td><td>Response latency, turn length, interruptions, talk-time ratio</td></tr>
+      <tr><td>Energy</td><td>RMS loudness mean and variability</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>E · Linguistic content</h3>
+  <p>This is where the actual predictive signal lives, and it is the group most teams building this product neglect. Transcribe, then score: STAR-structure completeness, specificity and concreteness, competency keyword coverage, first-person singular vs. plural (ownership vs. team framing), hedging density, quantification of claims.</p>
+
+  <h3>F · Session integrity</h3>
+  <p>Face visibility fraction, illumination stability, frame-drop rate, resolution, audio SNR, network jitter. <strong>Every downstream number must carry the quality context it was computed under.</strong> A candidate on a 2 Mbps mobile connection in poor light will produce degraded signals; without this group you will silently score them as low-expressivity.</p>
+</section>
+
+<section>
+  <div class="sec-head"><div class="sec-num">03</div><h2>Real-time architecture</h2></div>
+  <p class="lead">You chose live operation, which imposes one hard constraint the rest of the design has to accept: rPPG has an irreducible latency floor of about ten seconds.</p>
+  <p>Pulse rate is a frequency estimate, and frequency resolution requires observation time. A ten-second window gives roughly ±3 BPM of spectral resolution before interpolation. There is no algorithm that removes this — deep models included. Design the UI so the pulse panel populates late and updates on a slow cadence, rather than flickering per frame.</p>
+
+  <div class="tw"><table>
+    <caption>Per-stage latency budget, 720p / 30 fps, laptop CPU</caption>
+    <thead><tr><th>Stage</th><th>Latency</th><th>Cadence</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Frame capture</td><td class="mono">~33 ms</td><td class="mono">30 Hz</td><td>Disable auto-exposure and auto-white-balance if the driver allows</td></tr>
+      <tr><td>Face landmarks + AUs</td><td class="mono">15–30 ms</td><td class="mono">30 Hz</td><td>MediaPipe FaceLandmarker, CPU</td></tr>
+      <tr><td>Upper-body pose</td><td class="mono">10–20 ms</td><td class="mono">15 Hz</td><td>Halve the rate; posture does not change at 30 Hz</td></tr>
+      <tr><td>rPPG ROI sampling</td><td class="mono">&lt;2 ms</td><td class="mono">30 Hz</td><td>Just a masked mean</td></tr>
+      <tr><td>rPPG estimation</td><td class="mono">~10 s window</td><td class="mono">1 Hz</td><td>Irreducible. Recompute once per second over the sliding window</td></tr>
+      <tr><td>Prosody</td><td class="mono">~50 ms</td><td class="mono">10 Hz</td><td>1024-sample frames</td></tr>
+      <tr><td>Streaming ASR</td><td class="mono">300–800 ms</td><td>continuous</td><td>faster-whisper small, or a cloud endpoint</td></tr>
+      <tr><td>Fusion + emit</td><td class="mono">&lt;5 ms</td><td class="mono">1 Hz</td><td>Aligned FeatureFrame → WebSocket</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Pipeline shape</h3>
+  <p>Capture thread writes into a ring buffer. Independent workers consume it at their own cadences — face at 30 Hz, pose at 15 Hz, rPPG accumulating continuously and emitting at 1 Hz, audio on its own thread. A fusion stage assembles time-aligned <code>FeatureFrame</code> objects at 1 Hz and pushes them over a WebSocket to the UI, while appending to a Parquet log for post-session analysis. The starter code implements everything except the audio and ASR paths.</p>
+  <p>Deployment note: process on the candidate's device or in your own VPC, and stream features rather than raw video wherever possible. Raw interview video is the highest-liability asset in this system — the less of it you retain, the smaller every subsequent problem becomes.</p>
+</section>
+
+<section>
+  <div class="sec-head"><div class="sec-num">04</div><h2>Where the decision actually comes from</h2></div>
+  <p class="lead">If the product is going to influence hiring, the decision layer has to rest on something with demonstrated predictive validity. There is a clear answer to what that is, and it is not the face.</p>
+  <p>Sackett and colleagues re-analysed the personnel-selection literature in 2022, correcting a decades-old statistical overcorrection that had inflated published validities. The revised ranking:</p>
+
+  <div class="tw"><table>
+    <caption>Operational validity against job performance — Sackett et al. (2022)</caption>
+    <thead><tr><th>Predictor</th><th class="mono">r</th><th>Implication for this build</th></tr></thead>
+    <tbody>
+      <tr><td>Structured interviews</td><td class="mono">.42</td><td>The strongest single predictor. This is your decision layer.</td></tr>
+      <tr><td>Job knowledge tests</td><td class="mono">.40</td><td>Cheap to add, strong complement</td></tr>
+      <tr><td>Empirically keyed biodata</td><td class="mono">.38</td><td>Requires historical outcome data to key</td></tr>
+      <tr><td>Work sample tests</td><td class="mono">.33</td><td>Highest candidate acceptance</td></tr>
+      <tr><td>Cognitive ability</td><td class="mono">.31</td><td>Lower than the field long assumed; adverse-impact exposure</td></tr>
+      <tr><td>Facial / physiological signals</td><td class="mono">—</td><td>No established validity against job performance</td></tr>
+    </tbody>
+  </table></div>
+
+  <p>So build the product this way round. <strong>The structured-interview engine is the core:</strong> job-analysis-derived questions, behaviourally anchored rating scales, the same questions in the same order for every candidate, interviewer ratings captured against anchors, ratings locked before discussion. That alone is a sellable product in India, where most hiring is still unstructured — and unstructured interviews sit near <span class="mono">.19</span>.</p>
+
+  <p><strong>The signal layer serves three non-decisional jobs around it:</strong></p>
+  <ol>
+    <li><strong>Interview quality assurance.</strong> Did the interviewer follow the protocol? Talk-time ratio — an interviewer speaking 60% of the time is not interviewing. Did every candidate get the same questions with comparable time? This is measurement of your <em>process</em>, and it is genuinely valuable.</li>
+    <li><strong>Candidate-facing practice mode.</strong> The same signals delivered to the candidate about their own delivery — pacing, filler words, eye contact, expressive range. Here the accuracy bar is lower because nothing is at stake, consent is uncomplicated, and it is a product people will pay for directly.</li>
+    <li><strong>Interviewer bias telemetry.</strong> Do your interviewers' AU and prosody patterns differ systematically across candidate demographics? Do they interrupt some groups more? This turns the technology on the side of the process that actually has the power, and it is the most defensible thing in the whole system.</li>
+  </ol>
+
+  <div class="note">
+    <span class="lbl">The architectural rule</span>
+    <p>Signal-layer output must be physically incapable of reaching the decision layer. Separate services, separate stores, no shared score. Not a policy in a document — an architecture you can demonstrate to an auditor in ten minutes.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><div class="sec-num">05</div><h2>Legal position</h2></div>
+
+  <h3>India — where you are deploying</h3>
+  <p>The Digital Personal Data Protection Act 2023 is now operative: its Rules were notified on <strong>14 November 2025</strong>, with phased compliance obligations. Facial imagery, biometric features and physiological measurements are all personal data under the Act. What that requires of you:</p>
+  <ul>
+    <li><strong>Informed, specific, freely given consent</strong>, with an itemised notice naming each signal collected and each purpose. Note that "consent or forfeit the interview" is coercive by construction — build a genuine opt-out that does not disadvantage the candidate, or the consent will not hold.</li>
+    <li><strong>Purpose limitation.</strong> Data collected for delivery feedback cannot later be repurposed for a hiring model.</li>
+    <li><strong>Retention limits</strong> with actual deletion, and a working withdrawal path where withdrawal triggers erasure.</li>
+    <li><strong>Breach notification</strong> to the Data Protection Board and to affected persons.</li>
+    <li>Penalties reach <strong>₹250 crore</strong> per contravention.</li>
+  </ul>
+  <p>India has no statute specifically banning emotion inference in hiring today. That is a gap in the law, not a licence — and given the direction of travel globally, building a product whose core depends on that gap staying open is a poor bet.</p>
+
+  <h3>The exposure you may not have priced in</h3>
+  <div class="note warn">
+    <span class="lbl">Extraterritorial reach</span>
+    <p>EU AI Act Article 5(1)(f) prohibits AI systems that infer emotions from biometric data in workplace contexts, and the official guidelines confirm that <strong>hiring falls inside "workplace"</strong>. It is a prohibited practice, not a high-risk one — meaning it cannot be made compliant through documentation. Penalties reach €35M or 7% of global turnover.</p>
+    <p>This binds you if a single candidate sits in the EU while being interviewed, or if an EU-based client uses the tool. For an Indian services company interviewing remote or overseas candidates, that is not a hypothetical. The Tier 1 measurement layer and the structured-interview core survive this; a Tier 2/3 emotion-inference product does not.</p>
+  </div>
+  <p>US exposure follows a similar shape if you ever sell there — Illinois' AI Video Interview Act requires disclosure and consent, and NYC Local Law 144 requires an independent bias audit published before an automated tool is used in hiring.</p>
+</section>
+
+<section>
+  <div class="sec-head"><div class="sec-num">06</div><h2>Build sequence</h2></div>
+  <p class="lead">Roughly seven months to a defensible pilot. The ordering is deliberate: the structured-interview core ships before the signal layer is connected to anything, so that at every point there is a working product that does not depend on contested science.</p>
+
+  <div class="phases">
+    <div class="phase">
+      <div class="ph-when">Weeks 1–2<b>Phase 0</b></div>
+      <div>
+        <h3>Scope lock and consent design</h3>
+        <p>Write down, in one page, what the system will and will not claim. Delete Tier 3 from the product definition. Draft the DPDP consent notice and the opt-out path with counsel. Decide the retention window and build deletion before you build collection.</p>
+        <span class="gate"><b>Gate:</b> a lawyer has read the consent notice and the claim list.</span>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="ph-when">Weeks 3–6<b>Phase 1</b></div>
+      <div>
+        <h3>Signal capture, offline</h3>
+        <p>Extend the starter code: add the prosody worker and streaming ASR, validate the AU proxies against py-feat or OpenFace 3.0 on recorded video, and build the Parquet feature store. Offline first — it is far cheaper to debug without a latency budget.</p>
+        <span class="gate"><b>Gate:</b> a 30-minute recording processes end to end and every feature has a documented range and failure mode.</span>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="ph-when">Weeks 7–12<b>Phase 2</b></div>
+      <div>
+        <h3>Real-time pipeline and live UI</h3>
+        <p>Ring buffer, parallel workers at their own cadences, WebSocket fusion output. Build the live panel so that signal quality is a first-class element of the display, not a hidden filter — a greyed-out pulse tile reading "insufficient signal" is a feature, not a failure.</p>
+        <span class="gate"><b>Gate:</b> sustained 30 fps for 45 minutes with no memory growth; degraded conditions degrade the display, not the process.</span>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="ph-when">Weeks 9–14<b>Phase 3</b></div>
+      <div>
+        <h3>Structured-interview engine</h3>
+        <p>Runs in parallel with Phase 2 and is the actual product. Job-analysis templates, behaviourally anchored rating scales, question banks, per-interviewer rating capture, ratings locked before panel discussion, scoring and audit trail.</p>
+        <span class="gate"><b>Gate:</b> a full interview can be run and scored with the signal layer switched off entirely.</span>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="ph-when">Weeks 15–22<b>Phase 4</b></div>
+      <div>
+        <h3>Calibration and subgroup audit</h3>
+        <p>The phase that decides whether this ships. Collect a deliberately balanced validation set — Fitzpatrick I–VI, both eyewear states, facial hair, several camera and lighting classes. Measure rPPG error and AU detection accuracy <em>per subgroup</em>. Publish the disparity numbers internally. Any feature whose error differs materially across skin tone gets confidence-adjusted or dropped.</p>
+        <span class="gate"><b>Gate:</b> a written report stating per-subgroup error for every shipped signal. If you cannot produce it, you cannot ship.</span>
+      </div>
+    </div>
+    <div class="phase">
+      <div class="ph-when">Weeks 23–34<b>Phase 5</b></div>
+      <div>
+        <h3>Shadow-mode pilot</h3>
+        <p>Run live with one design partner, signal layer visible to nobody who makes decisions. Collect outcomes. Ask the only question that matters: does anything in the signal layer predict on-the-job performance six months later, over and above the structured-interview rating? Answer it with held-out data.</p>
+        <span class="gate"><b>Gate:</b> incremental validity demonstrated, or the signal layer stays permanently non-decisional. Both are acceptable outcomes; pretending is not.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <span class="lbl">Kill criteria — agree these now, while it is cheap</span>
+    <p>Stop and redesign if: subgroup error disparity exceeds your tolerance and cannot be corrected; the signal layer shows no incremental validity in Phase 5; or anyone on the team starts describing an output as detecting honesty, confidence, or a personality trait. That last one is the leading indicator of the other two.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><div class="sec-num">07</div><h2>What ships with this spec</h2></div>
+  <p>A working Python prototype implementing the Tier 1 measurement layer, with the DSP validated against synthetic ground truth:</p>
+  <ul>
+    <li><code>signals/au_map.py</code> — the 38-AU catalogue and blendshape mapping</li>
+    <li><code>signals/face.py</code> — AU proxies with bilateral asymmetry, head-pose decomposition, gaze, hysteresis blink detection, rPPG ROI extraction</li>
+    <li><code>signals/body.py</code> — shoulder line, lean, sway, gesture kinematics, self-touch</li>
+    <li><code>signals/rppg.py</code> — the POS algorithm with sub-bin peak interpolation and a signal quality index</li>
+    <li><code>fusion.py</code> — 1 Hz FeatureFrames and windowed descriptive indices with quality gating</li>
+    <li><code>run_live.py</code> — capture loop, consent gate, live overlay, Parquet export</li>
+  </ul>
+  <p>Verified: POS recovers synthetic pulse from 48–130 BPM to under 0.2 BPM and holds under 0.5 BPM through simulated head motion; under heavy noise it drops its quality index to 0.24 and the estimate is discarded rather than displayed. Head-pose decomposition round-trips to under 0.5°. The blink detector counts zero blinks across 300 frames of threshold chatter, where a single-threshold detector reports about 150.</p>
+  <p>Run <code>python3 run_live.py --selftest</code> first — it exercises the full path with no camera and no model weights.</p>
+</section>
+
+<footer>
+  <p>SOURCES</p>
+  <ol>
+    <li>Barrett, Adolphs, Marsella, Martinez &amp; Pollak (2019). <a href="https://journals.sagepub.com/doi/10.1177/1529100619832930">Emotional Expressions Reconsidered</a>. <em>Psychological Science in the Public Interest</em>.</li>
+    <li>Jordan et al. (2019). <a href="https://onlinelibrary.wiley.com/doi/10.1002/jip.1532">A test of the Micro-Expressions Training Tool</a>. <em>J. Investigative Psychology &amp; Offender Profiling</em>.</li>
+    <li>Sackett, Zhang, Berry &amp; Lievens (2022). <a href="https://pubmed.ncbi.nlm.nih.gov/34968080/">Revisiting meta-analytic estimates of validity in personnel selection</a>. <em>J. Applied Psychology</em>.</li>
+    <li>Di Lorenzo et al. (2024). <a href="https://link.springer.com/article/10.3758/s13428-024-02398-0">rPPG in the wild: remote heart rate imaging via online webcams</a>. <em>Behavior Research Methods</em>.</li>
+    <li>Wang, den Brinker, Stuijk &amp; de Haan (2017). Algorithmic principles of remote PPG. <em>IEEE TBME</em>.</li>
+    <li><a href="https://en.wikipedia.org/wiki/Digital_Personal_Data_Protection_Rules,_2025">Digital Personal Data Protection Rules, 2025</a> — notified 14 November 2025.</li>
+    <li>Future of Privacy Forum (2026). <a href="https://fpf.org/blog/red-lines-under-eu-ai-act-unpacking-the-prohibition-of-emotion-recognition-in-the-workplace-and-education-institutions/">Red lines under the EU AI Act: emotion recognition in the workplace</a>.</li>
+    <li><a href="https://github.com/CMU-MultiComp-Lab/OpenFace-3.0">OpenFace 3.0</a>, CMU MultiComp Lab; <a href="https://py-feat.org/">Py-Feat</a>, Computational Social Affective Neuroscience Lab.</li>
+  </ol>
+</footer>
+
+</div>

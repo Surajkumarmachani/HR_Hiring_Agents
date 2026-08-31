@@ -1,0 +1,19 @@
+# Core real-time pipeline
+mediapipe>=0.10.30,<1.0  # FaceLandmarker (478 lm + 52 blendshapes) + Pose
+                         # NOT 1.0.x: on macOS arm64 the face-detector subgraph
+                         # aborts in DrishtiMetalHelper ("Service is unavailable")
+                         # at graph open, with or without delegate=CPU. 0.10.35 is good.
+opencv-python>=4.9        # capture, ROI masking
+numpy>=1.24
+scipy>=1.11               # POS bandpass + Welch PSD
+pandas>=2.0
+pyarrow>=14.0             # parquet feature logs
+
+# --- Optional, add as you reach the relevant phase -----------------------
+# py-feat>=0.6            # FACS-trained AU intensities (offline, ~2-8 fps)
+# openface-test           # OpenFace 3.0: 8 emotions, gaze, AUs (GPU)
+# librosa>=0.10           # prosody: F0, energy, spectral features
+# praat-parselmouth>=0.4  # jitter, shimmer, HNR (Praat algorithms)
+# webrtcvad>=2.0          # voice activity detection for turn-taking
+# faster-whisper>=1.0     # streaming ASR for content/linguistic analysis
+# fairlearn>=0.10         # subgroup performance auditing (Phase 4 - required)

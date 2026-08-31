@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------------------
+# PERSONAL DATA — never commit. These are not "build noise"; under DPDP 2023
+# facial features, pose and pulse are personal data, and a consent record
+# identifies a subject. A repository is not a lawful place to retain either,
+# and git history makes deletion-on-withdrawal effectively impossible.
+# ---------------------------------------------------------------------------
+out/*.parquet
+out/consent.json
+out/consent*.json
+out/sessions/
+*.parquet
+
+# Raw video and audio. The programme's recorded decision is to extract
+# features and discard footage — this keeps an accident from contradicting it.
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wav
+*.m4a
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Local artefacts
+# ---------------------------------------------------------------------------
+models/*.part
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ---------------------------------------------------------------------------
+# Deliberately NOT ignored:
+#   models/*.task          vendored weights, pinned by digest in
+#                          signals/models.py — committing them is the point
+#   out/parameters.csv     generated parameter catalogue, no personal data
+#   out/interview-parameters.xlsx
+# ---------------------------------------------------------------------------
