@@ -1,32 +1,49 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Conduct interview</title><link rel="stylesheet" href="/static/app.css"></head><body>
+<title>Conduct interview</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/hud.css"></head><body class="hud">
 <div class="wrap wide">
-  <h1 id="title">Interview</h1>
-  <p class="sub" id="sub">Loading…</p>
+  <div class="hud-top">
+    <h1 id="title">Interview</h1>
+    <span class="meta" id="sub">connecting…</span>
+    <span class="hud-live off" id="livestate"><span class="dot"></span><span id="livetxt">standby</span></span>
+  </div>
   <div id="lockstate"></div>
 
-  <section id="live">
-    <h2>Candidate</h2>
-    <div class="live-grid">
-      <div>
-        <img id="feed" alt="Live view of the candidate" hidden>
-        <div id="noFeed" class="note"><p>Waiting for the candidate to join.</p></div>
-        <div class="card" style="margin-top:12px">
-          <h3>Transcript <span class="tag" id="tstat">waiting</span></h3>
-          <div id="transcript" class="transcript"><p class="hint">
-            Speech appears here a few seconds behind, transcribed on this
-            machine.</p></div>
+  <div class="hud-grid">
+    <div>
+      <div class="hud-wait" id="noFeed">awaiting candidate</div>
+      <div class="hud-feed" id="feedWrap" hidden>
+        <img id="feed" alt="Live view of the candidate">
+        <span class="corner tl"></span><span class="corner tr"></span>
+        <span class="corner bl"></span><span class="corner br"></span>
+      </div>
+      <div class="sec" style="--sec: var(--s-script); margin-top:12px">
+        <header>transcript
+          <span class="badge" id="tstat">waiting</span></header>
+        <div class="mic-row">
+          <button class="ghost" id="micBtn">Share my microphone</button>
+          <span class="hint" id="micMsg">Turn this on so your own questions
+            appear in the transcript.</span>
+        </div>
+        <div class="script" id="transcript">
+          <p class="placeholder">Speech appears here a few seconds behind,
+            newest first, transcribed on this machine.</p>
         </div>
       </div>
-      <div class="card" id="readout">
-        <h3>Live read <span class="tag warn">provisional</span></h3>
-        <p class="hint" id="advisory">Descriptive measurements. Not a score, and
-          not an input to one.</p>
-        <div id="metrics" class="metrics"></div>
+    </div>
+    <div id="metrics">
+      <div class="sec" style="--sec: var(--s-session)">
+        <header>session</header>
+        <div class="rows"><div class="rw"><span class="k">status</span>
+          <span class="fill"></span><span class="v none">no signal yet</span></div></div>
       </div>
     </div>
-  </section>
+  </div>
+
+  <div class="note" style="margin-top:14px"><p id="advisory">Descriptive
+    measurements. Not a score, and not an input to one.</p></div>
 
   <section id="questions"><h2>Questions</h2>
     <p class="sub">Ask all of them, in this order, for every candidate.</p>
@@ -48,26 +65,6 @@
 
   <section id="panel" hidden><h2>Panel</h2><div id="summary"></div></section>
 </div>
-<style>
-.live-grid { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(280px,1fr);
-  gap: 16px; align-items: start; }
-@media (max-width: 780px) { .live-grid { grid-template-columns: 1fr; } }
-#feed { width: 100%; border-radius: 6px; background: #000; display: block; }
-.metrics { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px;
-  font-size: 14px; margin-top: 10px; }
-.metrics .k { color: var(--ink-2); }
-.metrics .v { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
-.metrics .v.bad { color: var(--warn); }
-.metrics .hr { grid-column: 1/-1; border-top: 1px solid var(--rule); margin: 8px 0 2px; }
-.metrics .sec { grid-column: 1/-1; font-family: ui-monospace, monospace;
-  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
-  color: var(--accent); margin-top: 10px; }
-.transcript { max-height: 260px; overflow-y: auto; font-size: 14px; }
-.transcript p { margin: 0 0 8px; }
-.transcript .ts { font-family: ui-monospace, monospace; font-size: 11px;
-  color: var(--ink-3); margin-right: 6px; }
-.transcript .low { color: var(--warn); }
-</style>
 <script>
 const $ = s => document.querySelector(s);
 const parts = location.pathname.split("/");
@@ -83,7 +80,10 @@ async function load() {
   if (!r.ok) { $("#sub").textContent = "This link is not valid."; return; }
   S = await r.json();
   $("#title").textContent = S.role;
-  $("#sub").textContent = `Candidate ${S.candidate_ref} · you are ${WHO} · guide ${S.guide.id} v${S.guide.version}`;
+  $("#sub").textContent =
+    `${S.candidate_name ? S.candidate_name + " · " : ""}${S.candidate_ref}` +
+    ` · you are ${WHO} · guide ${S.guide.id} v${S.guide.version}`;
+  if (S.candidate_name) $("#title").textContent = `${S.role} — ${S.candidate_name}`;
 
   $("#qlist").innerHTML = S.questions.map((q,i) => `
     <div class="card"><h3>${i+1}. ${esc(q.text)}</h3>
@@ -222,7 +222,7 @@ function connectLive() {
   let url = null;
   ws.onmessage = e => {
     if (typeof e.data !== "string") {
-      $("#noFeed").hidden = true; $("#feed").hidden = false;
+      $("#noFeed").hidden = true; $("#feedWrap").hidden = false;
       const next = URL.createObjectURL(e.data);
       $("#feed").src = next;
       if (url) URL.revokeObjectURL(url);
@@ -231,99 +231,205 @@ function connectLive() {
     }
     try { renderMetrics(JSON.parse(e.data)); } catch (_) {}
   };
-  ws.onclose = () => setTimeout(connectLive, 3000);
+  ws.onclose = () => { setLive(false); setTimeout(connectLive, 3000); };
   setInterval(() => ws.readyState === 1 && ws.send("ping"), 20000);
+}
+
+const SECTIONS = [
+  ["pulse (rPPG)",   "--s-pulse"],
+  ["face",           "--s-face"],
+  ["gaze",           "--s-gaze"],
+  ["blink",          "--s-blink"],
+  ["body",           "--s-body"],
+  ["capture quality","--s-quality"],
+  ["action units",   "--s-aus"],
+];
+
+function sec(title, colour, rows, badge) {
+  return `<div class="sec" style="--sec: var(${colour})">
+    <header>${title}${badge ? `<span class="badge">${badge}</span>` : ""}</header>
+    <div class="rows">${rows}</div></div>`;
+}
+
+function rw(k, v, state) {
+  const cls = state ? ` ${state}` : (v === "—" || v == null ? " none" : "");
+  return `<div class="rw"><span class="k">${k}</span><span class="fill"></span>
+    <span class="v${cls}">${v ?? "—"}</span></div>`;
 }
 
 function renderMetrics(d) {
   if (d.error) return;
   if (d.type === "transcript") return renderTranscript(d);
-  const rows = [];
-  const sec = t => rows.push(`<div class="sec">${t}</div>`);
-  const push = (k, v, bad) => rows.push(
-    `<div class="k">${k}</div><div class="v${bad ? " bad" : ""}">${v ?? "—"}</div>`);
+  setLive(true, `${d.effective_fps} fps · t+${Math.floor(d.t)}s`);
 
-  sec("pulse (rPPG)");
-  if (d.pulse && d.pulse.bpm != null) {
-    push("bpm", d.pulse.bpm, d.pulse.sqi < 0.55);
-    push("signal quality", d.pulse.sqi, d.pulse.sqi < 0.55);
-    push("iqr", d.pulse.iqr + " bpm");
-    push("coverage", Math.round(d.pulse.coverage * 100) + "%");
-    push("instant", d.pulse.instant);
-    // ROI disagreement is the honest check on a pulse figure: SQI can look
-    // healthy while the three regions track different frequencies entirely.
-    push("roi spread", d.pulse.roi_spread != null ? d.pulse.roi_spread + " bpm" : "—",
-         d.pulse.roi_spread > 8);
+  const out = [];
+
+  // session
+  out.push(sec("session", "--s-session",
+    rw("elapsed", Math.floor(d.t) + " s") +
+    rw("frames", d.frames) +
+    rw("stream rate", d.effective_fps + " fps", d.effective_fps < 8 ? "warn" : "") +
+    rw("face visible", d.face_visibility, d.face_visibility < 0.6 ? "crit" : "ok")));
+
+  // pulse, with the headline read
+  const p = d.pulse || {};
+  let pulseRows;
+  if (p.bpm != null) {
+    const q = Math.max(0, Math.min(1, p.sqi));
+    pulseRows =
+      `<div class="bpm"><span class="n">${p.bpm}</span><span class="u">BPM</span>
+        <span class="bar"><i style="width:${(q*100).toFixed(0)}%"></i></span></div>` +
+      rw("signal quality", p.sqi, p.sqi < 0.55 ? "warn" : "ok") +
+      rw("iqr", p.iqr + " bpm", p.iqr > 10 ? "warn" : "") +
+      rw("coverage", Math.round(p.coverage * 100) + "%") +
+      rw("instant", p.instant) +
+      // ROI disagreement is the honest check on a pulse figure: SQI can look
+      // healthy while the three regions lock onto different frequencies.
+      rw("roi spread", p.roi_spread != null ? p.roi_spread + " bpm" : "—",
+         p.roi_spread > 8 ? "crit" : "");
   } else {
-    push("status", (d.pulse && d.pulse.status) || "—", true);
+    pulseRows = `<div class="bpm dim"><span class="n">—</span></div>` +
+      rw("status", p.status || "insufficient signal", "warn");
   }
+  out.push(sec("pulse (rPPG)", "--s-pulse", pulseRows));
 
-  sec("face");
-  push("visible", d.face_visibility, d.face_visibility < 0.6);
-  push("active AUs", d.face.active_aus);
-  push("AU sum", d.face.au_sum);
-  push("yaw/pitch/roll", d.face.head.join(" / "));
-  push("head motion", d.face.head_motion);
-  push("smile duchenne", d.face.smile_duchenne);
-  push("smile social", d.face.smile_social);
+  out.push(sec("face", "--s-face",
+    rw("active AUs", d.face.active_aus) +
+    rw("AU sum", d.face.au_sum) +
+    rw("yaw / pitch / roll", d.face.head.join(" / ")) +
+    rw("head motion", d.face.head_motion) +
+    rw("smile duchenne", d.face.smile_duchenne) +
+    rw("smile social", d.face.smile_social)));
 
-  sec("gaze");
-  push("x / y", `${d.gaze.x ?? "—"} / ${d.gaze.y ?? "—"}`);
-  push("magnitude", d.gaze.magnitude);
-  push("on camera", d.gaze.on_camera);
+  out.push(sec("gaze", "--s-gaze",
+    rw("x / y", `${d.gaze.x ?? "—"} / ${d.gaze.y ?? "—"}`) +
+    rw("magnitude", d.gaze.magnitude) +
+    rw("on camera", d.gaze.on_camera)));
 
-  sec("blink");
-  push("count", d.blink.count);
-  push("mean duration", d.blink.mean_dur_ms != null ? d.blink.mean_dur_ms + " ms" : "—");
-  push("interblink", d.blink.interblink_s != null ? d.blink.interblink_s + " s" : "—");
-  push("variability", d.blink.cv);
+  out.push(sec("blink", "--s-blink",
+    rw("count", d.blink.count) +
+    rw("mean duration", d.blink.mean_dur_ms != null ? d.blink.mean_dur_ms + " ms" : "—") +
+    rw("interblink", d.blink.interblink_s != null ? d.blink.interblink_s + " s" : "—") +
+    rw("variability", d.blink.cv)));
 
-  sec("body");
-  if (d.body) {
-    push("shoulder tilt", d.body.shoulder_tilt != null ? d.body.shoulder_tilt + "°" : "—");
-    push("lean", d.body.lean);
-    push("sway", d.body.sway);
-    push("gesture energy", d.body.gesture_energy);
-    push("self-touch", d.body.self_touch);
-    push("hands visible", d.body.hands_visible);
-  } else push("status", "not available", true);
+  out.push(sec("body", "--s-body", d.body
+    ? rw("shoulder tilt", d.body.shoulder_tilt != null ? d.body.shoulder_tilt + "°" : "—") +
+      rw("lean", d.body.lean) + rw("sway", d.body.sway) +
+      rw("gesture energy", d.body.gesture_energy) +
+      rw("self-touch", d.body.self_touch) +
+      rw("hands visible", d.body.hands_visible)
+    : rw("status", "not available", "warn")));
 
-  sec("capture quality");
-  push("illumination", d.quality.illumination);
-  push("light stability", d.quality.stability, d.quality.stability > 12);
-  push("face size", d.quality.face_px != null ? d.quality.face_px + " px" : "—",
-       d.quality.face_px != null && d.quality.face_px < 120);
-  push("frame drops", d.quality.drops != null
-       ? (d.quality.drops * 100).toFixed(1) + "%" : "—", d.quality.drops > 0.10);
-  push("stream rate", d.effective_fps + " fps", d.effective_fps < 8);
+  out.push(sec("capture quality", "--s-quality",
+    rw("illumination", d.quality.illumination) +
+    rw("light stability", d.quality.stability, d.quality.stability > 12 ? "warn" : "") +
+    rw("face size", d.quality.face_px != null ? d.quality.face_px + " px" : "—",
+       d.quality.face_px != null && d.quality.face_px < 120 ? "warn" : "") +
+    rw("frame drops", d.quality.drops != null
+       ? (d.quality.drops * 100).toFixed(1) + "%" : "—",
+       d.quality.drops > 0.10 ? "crit" : "")));
 
   if (d.top_aus && d.top_aus.length) {
-    sec("strongest action units");
-    d.top_aus.forEach(a => push(`${a.code} ${a.name}${a.asym ? " asym" : ""}`, a.value));
+    out.push(sec("action units", "--s-aus",
+      d.top_aus.map(a => rw(`${a.code} ${a.name}${a.asym ? " asym" : ""}`,
+                            a.value)).join(""),
+      "strongest"));
   }
 
-  $("#metrics").innerHTML = rows.join("");
+  $("#metrics").innerHTML = out.join("");
   if (d.advisory) $("#advisory").textContent = d.advisory;
+}
+
+function setLive(on, txt) {
+  $("#livestate").className = "hud-live" + (on ? "" : " off");
+  $("#livetxt").textContent = on ? (txt || "live") : "standby";
 }
 
 function renderTranscript(d) {
   const box = $("#transcript");
-  if (box.querySelector(".hint")) box.innerHTML = "";
-  const s = d.segment;
-  if (!s || !s.text) return;
-  const low = s.confidence != null && s.confidence < 0.85;
-  const p = document.createElement("p");
-  p.innerHTML = `<span class="ts">${Math.floor(s.t/60)}:${String(Math.floor(s.t%60)).padStart(2,"0")}</span>` +
-    `<span class="${low ? "low" : ""}">${esc(s.text)}</span>`;
-  box.appendChild(p);
-  box.scrollTop = box.scrollHeight;
-  // Confidence is shown because Group E measures the words that were
-  // transcribed: a bad transcript degrades them in ways that look like
-  // findings about the candidate.
-  $("#tstat").textContent = low
-    ? `low confidence ${s.confidence.toFixed(2)}`
-    : `ok ${s.confidence != null ? s.confidence.toFixed(2) : ""}`;
-  $("#tstat").className = "tag " + (low ? "warn" : "ok");
+  const ph = box.querySelector(".placeholder");
+  if (ph) ph.remove();
+  const L = d.line;
+  if (!L || !L.text) return;
+
+  const isCand = L.speaker === "candidate";
+  // Confidence is surfaced because content measures read the words that were
+  // transcribed: a poor transcript degrades them in ways that look like
+  // findings about the speaker.
+  const low = L.confidence != null && L.confidence < 0.85;
+  const t = Math.floor(L.t);
+  const stamp = `${Math.floor(t/60)}:${String(t%60).padStart(2,"0")}`;
+
+  // "append" rewrites the line already on screen -- the speaker is still
+  // going, so their words belong where they started, not on a new line.
+  let el = box.querySelector(`[data-line="${L.id}"]`);
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "line newest";
+    el.dataset.line = L.id;
+    box.querySelectorAll(".newest").forEach(x => x.classList.remove("newest"));
+    box.prepend(el);          // newest at the top
+    box.scrollTop = 0;
+  }
+  el.innerHTML =
+    `<span class="ts">${stamp}</span>` +
+    `<span class="who ${isCand ? "cand" : "intv"}">${
+       isCand ? "candidate" : esc(L.speaker)}</span>` +
+    `<span class="said${low ? " low" : ""}">${esc(L.text)}${
+       L.continued ? '<span class="cont"> …continued</span>' : ""}</span>`;
+
+  $("#tstat").textContent = L.confidence != null
+    ? (low ? `low conf ${L.confidence.toFixed(2)}` : `conf ${L.confidence.toFixed(2)}`)
+    : "ok";
+}
+
+// ---- the interviewer's own microphone --------------------------------
+// Their questions belong in the transcript too, and capturing them from their
+// own mic on their own socket is what makes the speaker label reliable --
+// there is nothing to diarise.
+let micStream = null, micWs = null, micRec = null, micLoop = null;
+
+$("#micBtn").onclick = async () => {
+  if (micWs) return stopMic();
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {echoCancellation: true, noiseSuppression: true}});
+  } catch (e) {
+    $("#micMsg").textContent = "Could not reach your microphone (" + e.name + ").";
+    return;
+  }
+  micWs = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://` +
+    `${location.host}/ws/audio/${SID}?t=${encodeURIComponent(T)}&role=${WHO}`);
+  const mime = ["audio/webm;codecs=opus","audio/webm"]
+    .find(m => MediaRecorder.isTypeSupported(m));
+  // Each chunk is a complete file: MediaRecorder writes headers only on the
+  // first blob of a recording, so the recorder restarts per chunk.
+  const cycle = () => {
+    if (!micWs || micWs.readyState !== 1) return;
+    const parts = [];
+    micRec = new MediaRecorder(micStream, {mimeType: mime});
+    micRec.ondataavailable = e => e.data.size && parts.push(e.data);
+    micRec.onstop = () => {
+      const b = new Blob(parts, {type: mime});
+      if (b.size > 2000 && micWs.readyState === 1)
+        b.arrayBuffer().then(a => micWs.send(a));
+    };
+    micRec.start();
+    setTimeout(() => micRec.state !== "inactive" && micRec.stop(), 6000);
+  };
+  micWs.onopen = () => { cycle(); micLoop = setInterval(cycle, 6200);
+    $("#micBtn").textContent = "Stop sharing my microphone";
+    $("#micMsg").textContent = "Your questions are being transcribed."; };
+  micWs.onclose = () => { clearInterval(micLoop); };
+};
+
+function stopMic() {
+  clearInterval(micLoop);
+  try { micRec && micRec.state !== "inactive" && micRec.stop(); } catch (_) {}
+  micWs && micWs.close(); micWs = null;
+  micStream && micStream.getTracks().forEach(t => t.stop()); micStream = null;
+  $("#micBtn").textContent = "Share my microphone";
+  $("#micMsg").textContent = "Your questions will not appear in the transcript.";
 }
 
 load();

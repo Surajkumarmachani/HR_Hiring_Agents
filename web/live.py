@@ -24,13 +24,22 @@ descriptive. It exists so the interviewer can see when capture has gone bad --
 face out of frame, backlit, dropping frames -- while there is still time to
 fix it. It is not a score, and the panel says so on every update.
 
-TRANSCRIPTION
--------------
+TRANSCRIPTION, AND WHO SAID IT
+------------------------------
 Audio arrives as self-contained WebM chunks and is transcribed by
 faster-whisper on the machine running this server. Nothing is sent to a hosted
 ASR: that would put candidate speech in a third party's logs, which no consent
 notice here covers. Transcription runs in a worker thread so a slow chunk
 cannot stall the frame path.
+
+Speaker attribution needs no diarisation. Each participant's microphone feeds
+its own socket from its own browser, so the speaker is known by construction
+-- which is the whole point of the programme's recorded decision to take
+separate tracks rather than diarise a mixed one. Diarisation on a mixed track
+is a research problem; this is a routing detail.
+
+One transcriber per speaker, so a slow chunk from one side never delays the
+other.
 """
 
 import asyncio
@@ -222,8 +231,9 @@ class LiveTranscriber:
     transcript that cannot desynchronise.
     """
 
-    def __init__(self, cfg=None):
+    def __init__(self, speaker="candidate", cfg=None):
         self.cfg = cfg or CONFIG
+        self.speaker = speaker
         self.segments = []
         self.busy = False
         self.chunks_seen = 0
@@ -259,15 +269,201 @@ class LiveTranscriber:
                 fh.write(chunk)
                 path = fh.name
             r = transcribe(path, self.cfg)
-            return {"t": round(t_offset, 1), "text": r["text"],
+            # `words` must be the timed word list, not a count: the line
+            # builder measures silence from word start/end times. Returning
+            # word_count here made the builder crash on the live path while
+            # unit tests -- which hand-built the list -- passed.
+            # `t_offset` is when the chunk ARRIVED, which is the end of its
+            # audio, not the start. Word timings are relative to the chunk's
+            # start, so the start is what the builder needs -- otherwise every
+            # chunk lands ~6 s late on the session timeline and the gap to the
+            # previous line looks like a long pause, breaking a line at every
+            # boundary no matter what the speaker did.
+            return {"t": round(t_offset, 1),
+                    "audio_start": round(t_offset - r["duration_s"], 2),
+                    "duration_s": r["duration_s"],
+                    "speaker": self.speaker,
+                    "text": r["text"],
                     "confidence": r["mean_word_confidence"],
-                    "words": r["word_count"]}
+                    "words": r["words"],
+                    "word_count": r["word_count"]}
         except Exception as e:
-            return {"t": round(t_offset, 1), "text": "",
-                    "error": f"{type(e).__name__}: {e}"}
+            return {"t": round(t_offset, 1), "speaker": self.speaker,
+                    "text": "", "error": f"{type(e).__name__}: {e}"}
         finally:
             if path and os.path.exists(path):
                 os.unlink(path)
+
+
+class TranscriptBuilder:
+    """Turns transcribed chunks into lines that follow speech, not transport.
+
+    THE PROBLEM
+    -----------
+    Audio arrives in fixed ~6 s chunks. That boundary is a transport artefact
+    and has nothing to do with where a sentence ends, so emitting one line per
+    chunk splits people mid-thought: "My name is Suraj Kumar" on one line and
+    "and I am from Bhojpur, Bihar" on the next, when it was one breath.
+
+    WHERE A LINE ACTUALLY ENDS
+    --------------------------
+    A line breaks on evidence from the speech itself:
+
+      - the speaker changed;
+      - silence longer than `transcript_pause_sec`;
+      - a shorter pause AFTER a sentence already closed on . ! or ? -- end of
+        sentence plus a breath is a new thought, whereas a full stop with no
+        pause is usually a comma the transcriber wrote as one;
+      - a cap on length, so ten minutes of talking is not one paragraph.
+        Lines broken by the cap are flagged `continued`, because that break is
+        ours rather than the speaker's.
+
+    Silence is measured from Whisper's word timestamps: leading silence in the
+    new chunk plus trailing silence in the previous one. A long gap BETWEEN
+    words inside one chunk splits it too, so a pause never has to wait for a
+    chunk boundary to take effect.
+
+    WHAT THIS DELIBERATELY DOES NOT DO
+    ----------------------------------
+    No semantic topic detection. Breaking on embedding distance sounds
+    appealing and is unreliable: it would split a speaker mid-argument
+    whenever they changed example, and merge two unrelated short answers that
+    happened to share vocabulary. Pause and sentence structure are what
+    actually mark a new thought, and they are observable rather than inferred.
+    """
+
+    SENTENCE_END = (".", "!", "?", "\u2026")
+
+    def __init__(self, cfg=None):
+        self.c = (cfg or CONFIG).text
+        self.lines = []
+        self._next_id = 1
+
+    def _new_line(self, speaker, t, t_end, text, conf, continued=False,
+                  boundary_end=False):
+        # t_end must be the end of the SPEECH, not a copy of the start: the
+        # silence test measures from where the previous line stopped, so a
+        # t_end stuck at t made every gap look like the whole line duration
+        # and broke a line at every chunk boundary.
+        line = {"id": self._next_id, "speaker": speaker,
+                "t": round(max(t, 0.0), 1),
+                "t_end": round(max(t_end, t, 0.0), 1), "text": text.strip(),
+                "confidence": conf, "continued": continued,
+                # True when the text stops at a chunk edge, so its final
+                # punctuation came from Whisper running out of audio rather
+                # than from the speaker finishing a sentence.
+                "boundary_end": boundary_end}
+        self._next_id += 1
+        self.lines.append(line)
+        return {"op": "new", "line": line}
+
+    def _extend(self, line, t_end, text, conf, boundary_end=False):
+        line["text"] = (line["text"] + " " + text.strip()).strip()
+        line["t_end"] = round(max(t_end, line["t"]), 1)
+        line["boundary_end"] = boundary_end
+        if conf is not None:
+            prev = line["confidence"]
+            line["confidence"] = conf if prev is None else (prev + conf) / 2.0
+        return {"op": "append", "line": line}
+
+    def add(self, speaker, chunk, t_offset):
+        """Fold one transcribed chunk into the line structure.
+
+        Returns a list of {op, line} updates: "new" prepends a line in the UI,
+        "append" rewrites the one already there.
+        """
+        text = (chunk.get("text") or "").strip()
+        if not text:
+            return []
+        words = chunk.get("words") or []
+        conf = chunk.get("confidence")
+
+        # Split this chunk wherever the speaker paused mid-chunk, so a break
+        # does not have to wait for the next chunk to arrive.
+        pieces = self._split_on_gaps(text, words, t_offset)
+        updates = []
+        for i, (piece_text, p_start, p_end, lead_gap) in enumerate(pieces):
+            # Only the final piece of a chunk sits against the chunk edge.
+            at_boundary = (i == len(pieces) - 1)
+            last = self.lines[-1] if self.lines else None
+            if last is None or last["speaker"] != speaker:
+                updates.append(self._new_line(speaker, p_start, p_end,
+                                              piece_text, conf,
+                                              boundary_end=at_boundary))
+                continue
+
+            # lead_gap is non-zero only for the first piece of a chunk, which
+            # is where the transport artefact lives. Discount it there and
+            # nowhere else.
+            silence = max(0.0, p_start - last["t_end"]) + lead_gap
+            if lead_gap > 0.0 or p_start > last["t_end"]:
+                silence = max(0.0, silence
+                              - self.c.transcript_chunk_gap_allowance_sec)
+            # Trust a full stop only when Whisper saw what came after it.
+            # At a chunk edge it inserts one regardless, so treating that as
+            # end-of-sentence broke a line at every boundary -- the artefact
+            # this builder exists to remove. Observed live: "...running 503
+            # server." was mid-sentence, continuing "during the peak hour."
+            ended = (last["text"].endswith(self.SENTENCE_END)
+                     and not last.get("boundary_end"))
+            too_long = (last["t_end"] - last["t"] >= self.c.transcript_max_line_sec
+                        or len(last["text"]) >= self.c.transcript_max_line_chars)
+
+            if silence >= self.c.transcript_pause_sec:
+                updates.append(self._new_line(speaker, p_start, p_end,
+                                              piece_text, conf,
+                                              boundary_end=at_boundary))
+            elif ended and silence >= self.c.transcript_sentence_pause_sec:
+                updates.append(self._new_line(speaker, p_start, p_end,
+                                              piece_text, conf,
+                                              boundary_end=at_boundary))
+            elif too_long:
+                updates.append(self._new_line(speaker, p_start, p_end,
+                                              piece_text, conf, continued=True,
+                                              boundary_end=at_boundary))
+            else:
+                updates.append(self._extend(last, p_end, piece_text, conf,
+                                            boundary_end=at_boundary))
+        return updates
+
+    def _split_on_gaps(self, text, words, t_offset):
+        """(text, start, end, leading_gap) per piece, split on internal pauses."""
+        # Without timings there is nothing to split on, so the whole chunk is
+        # one piece. Checking the shape rather than trusting it: a caller that
+        # passes a count instead of a list should lose pause detection, not
+        # take the socket down mid-interview.
+        if not words or not isinstance(words, (list, tuple)) \
+                or not isinstance(words[0], dict):
+            return [(text, t_offset, t_offset + 1.0, 0.0)]
+
+        lead = max(0.0, float(words[0].get("start") or 0.0))
+        pieces, buf, start = [], [], t_offset + lead
+        prev_end = None
+        for w in words:
+            ws = float(w.get("start") or 0.0)
+            we = float(w.get("end") or ws)
+            gap = 0.0 if prev_end is None else ws - prev_end
+            # Inside a chunk Whisper saw what came after the full stop, so its
+            # punctuation is real evidence here -- unlike at a chunk edge,
+            # where it inserts one for lack of audio. So the same two-tier
+            # rule applies: a long pause always splits, a shorter one splits
+            # only if the sentence had actually closed.
+            closed = bool(buf) and buf[-1].strip().endswith(self.SENTENCE_END)
+            if prev_end is not None and (
+                    gap >= self.c.transcript_pause_sec
+                    or (closed and gap >= self.c.transcript_sentence_pause_sec)):
+                pieces.append((" ".join(buf), start, t_offset + prev_end, 0.0))
+                buf, start = [], t_offset + ws
+            buf.append(w.get("word", ""))
+            prev_end = we
+        if buf:
+            pieces.append((" ".join(buf), start,
+                           t_offset + (prev_end or lead), 0.0))
+        # Leading silence belongs to the FIRST piece only -- it is the gap that
+        # separates this chunk from whatever came before it.
+        first = pieces[0]
+        pieces[0] = (first[0], first[1], first[2], lead)
+        return [p for p in pieces if p[0].strip()]
 
 
 class Hub:
@@ -276,7 +472,12 @@ class Hub:
     def __init__(self):
         self.watchers = defaultdict(set)      # sid -> {WebSocket}
         self.analyzers = {}                   # sid -> LiveAnalyzer
-        self.transcribers = {}                # sid -> LiveTranscriber
+        self.transcribers = {}                # (sid, speaker) -> LiveTranscriber
+        self.started = {}                     # sid -> t0, so both speakers
+                                              # share one timeline
+        self.builders = {}                    # sid -> TranscriptBuilder,
+                                              # shared so speaker changes break
+                                              # a line
         self.latest = {}                      # sid -> last snapshot
 
     def analyzer(self, sid, fps=12.0):
@@ -284,10 +485,25 @@ class Hub:
             self.analyzers[sid] = LiveAnalyzer(fps=fps)
         return self.analyzers[sid]
 
-    def transcriber(self, sid):
-        if sid not in self.transcribers:
-            self.transcribers[sid] = LiveTranscriber()
-        return self.transcribers[sid]
+    def transcriber(self, sid, speaker):
+        key = (sid, speaker)
+        if key not in self.transcribers:
+            self.transcribers[key] = LiveTranscriber(speaker)
+        return self.transcribers[key]
+
+    def builder(self, sid):
+        """One builder per SESSION, not per speaker: a line has to break when
+        the other person starts talking, which only a shared view can see."""
+        if sid not in self.builders:
+            self.builders[sid] = TranscriptBuilder()
+        return self.builders[sid]
+
+    def clock(self, sid):
+        """Shared session start, so candidate and interviewer timestamps line
+        up in one transcript instead of each counting from their own join."""
+        if sid not in self.started:
+            self.started[sid] = time.time()
+        return self.started[sid]
 
     def drop(self, sid):
         a = self.analyzers.pop(sid, None)
@@ -295,8 +511,13 @@ class Hub:
             a.close()
         self.latest.pop(sid, None)
 
-    def drop_audio(self, sid):
-        self.transcribers.pop(sid, None)
+    def drop_audio(self, sid, speaker=None):
+        for key in [k for k in self.transcribers
+                    if k[0] == sid and (speaker is None or k[1] == speaker)]:
+            self.transcribers.pop(key, None)
+        if speaker is None:
+            self.started.pop(sid, None)
+            self.builders.pop(sid, None)
 
     async def broadcast(self, sid, *, frame=None, measures=None):
         dead = []

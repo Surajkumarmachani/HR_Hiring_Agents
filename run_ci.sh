@@ -9,6 +9,7 @@ echo "== parameter ranges =="     && python3 tests/test_parameter_ranges.py
 echo "== audio prosody =="        && python3 tests/test_audio.py
 echo "== interview engine =="     && python3 tests/test_interview.py
 echo "== linguistic content ==" && python3 tests/test_text.py
+echo "== transcript lines =="   && python3 tests/test_transcript_lines.py
 echo "== end-to-end selftest ==" && python3 run_live.py --selftest
 echo "== dependency pins =="     && python3 -c "
 import mediapipe, sys

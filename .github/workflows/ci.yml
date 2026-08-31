@@ -52,6 +52,9 @@ jobs:
       - name: Linguistic content (Group E)
         run: python3 tests/test_text.py
 
+      - name: Transcript line breaking (WP5)
+        run: python3 tests/test_transcript_lines.py
+
       - name: End-to-end selftest (synthetic frames)
         run: python3 run_live.py --selftest
 

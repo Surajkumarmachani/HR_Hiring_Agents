@@ -1,0 +1,202 @@
+/* Candidate interface.
+   Deliberately NOT the interviewer's HUD. The person on this side is nervous
+   and is not operating an instrument -- they are being interviewed. So: no
+   telemetry, no readouts, no measurement of any kind shown back at them.
+   Wide margins, one thing to do at a time, and controls that are obviously
+   theirs (mute, camera off, leave) so the session never feels like something
+   happening TO them.
+
+   Single-theme dark, because a full-bleed video call reads better on a dark
+   ground and the video is the page. Every colour is stated, not inherited. */
+
+:root {
+  --c-bg: #0f1214;
+  --c-surface: #171b1f;
+  --c-surface-2: #1f252a;
+  --c-rule: #2a3238;
+  --c-ink: #e8eef1;
+  --c-ink-2: #a3b1b9;
+  --c-ink-3: #6d7d86;
+  --c-accent: #4db6a4;
+  --c-accent-ink: #06231d;
+  --c-live: #ef5350;
+  --c-warn: #e0a33e;
+  --c-ok: #5cbd7a;
+}
+
+body.cand {
+  margin: 0; background: var(--c-bg); color: var(--c-ink);
+  font: 16px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+.shell { max-width: 900px; margin: 0 auto; padding: 40px 24px 64px; }
+.shell.wide { max-width: 1180px; }
+
+/* ---- greeting ------------------------------------------------------- */
+.hello { margin-bottom: 30px; }
+.hello .org {
+  font-size: 12px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--c-accent); margin: 0 0 10px;
+}
+.hello h1 {
+  font-size: clamp(26px, 4vw, 36px); line-height: 1.15; margin: 0 0 8px;
+  font-weight: 600; letter-spacing: -0.015em;
+}
+.hello .role { font-size: 17px; color: var(--c-ink-2); margin: 0; }
+
+.panel {
+  background: var(--c-surface); border: 1px solid var(--c-rule);
+  border-radius: 12px; padding: 24px 26px; margin-bottom: 18px;
+}
+.panel h2 { font-size: 18px; margin: 0 0 12px; font-weight: 600; }
+.panel p { color: var(--c-ink-2); margin: 0 0 12px; max-width: 62ch; }
+.panel p:last-child { margin-bottom: 0; }
+
+/* ---- stage: the video is the page ----------------------------------- */
+.stage {
+  position: relative; border-radius: 14px; overflow: hidden;
+  background: #000; aspect-ratio: 16 / 9; border: 1px solid var(--c-rule);
+}
+.stage video { width: 100%; height: 100%; object-fit: cover; display: block;
+  transform: scaleX(-1); }
+/* Mirrored, because every video call mirrors self-view and an unmirrored
+   image of yourself is quietly disorienting. Only the display is flipped --
+   the frames sent for measurement are not. */
+
+.stage.off video { visibility: hidden; }
+.stage .camoff {
+  position: absolute; inset: 0; display: none; place-items: center;
+  color: var(--c-ink-3); font-size: 15px; background: #0b0e10;
+}
+.stage.off .camoff { display: grid; }
+
+.stage-top {
+  position: absolute; top: 0; left: 0; right: 0; padding: 14px 16px;
+  display: flex; align-items: center; gap: 12px;
+  background: linear-gradient(180deg, rgba(0,0,0,.62), transparent);
+  pointer-events: none;
+}
+.chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.14);
+  border-radius: 999px; padding: 5px 12px; font-size: 12.5px;
+  color: var(--c-ink); backdrop-filter: blur(6px);
+}
+.chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-ink-3); }
+.chip.live .dot { background: var(--c-live); }
+@media (prefers-reduced-motion: no-preference) {
+  .chip.live .dot { animation: blip 1.6s ease-in-out infinite; }
+  @keyframes blip { 50% { opacity: .3; } }
+}
+.chip.timer { margin-left: auto; font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, monospace; }
+
+/* ---- controls ------------------------------------------------------- */
+.controls {
+  display: flex; gap: 12px; align-items: center; justify-content: center;
+  margin-top: 18px; flex-wrap: wrap;
+}
+.ctl {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 6px;
+  background: none; border: 0; cursor: pointer; color: var(--c-ink-2);
+  font: inherit; font-size: 12px; padding: 0;
+}
+.ctl .glyph {
+  width: 54px; height: 54px; border-radius: 50%;
+  display: grid; place-items: center;
+  background: var(--c-surface-2); border: 1px solid var(--c-rule);
+  color: var(--c-ink); transition: background .12s, border-color .12s;
+}
+.ctl:hover .glyph { background: #29323a; }
+.ctl[aria-pressed="true"] .glyph {
+  background: rgba(239, 83, 80, .16); border-color: var(--c-live);
+  color: var(--c-live);
+}
+.ctl.primary .glyph { background: var(--c-accent); border-color: var(--c-accent);
+  color: var(--c-accent-ink); width: 74px; border-radius: 28px; }
+.ctl.leave .glyph { background: var(--c-live); border-color: var(--c-live);
+  color: #2b0708; width: 74px; border-radius: 28px; }
+.ctl:disabled { opacity: .4; cursor: not-allowed; }
+.ctl:focus-visible .glyph { outline: 2px solid var(--c-accent); outline-offset: 3px; }
+.ctl svg { width: 22px; height: 22px; fill: currentColor; }
+
+/* ---- device pickers + mic meter ------------------------------------- */
+.devices { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; margin-top: 20px; }
+@media (max-width: 640px) { .devices { grid-template-columns: 1fr; } }
+.devices label { display: block; font-size: 12.5px; color: var(--c-ink-3);
+  margin-bottom: 6px; }
+.devices select {
+  width: 100%; padding: 10px 12px; border-radius: 8px; font: inherit;
+  background: var(--c-surface-2); color: var(--c-ink);
+  border: 1px solid var(--c-rule);
+}
+.meter { height: 6px; border-radius: 3px; background: var(--c-surface-2);
+  overflow: hidden; margin-top: 9px; }
+.meter i { display: block; height: 100%; width: 0%; background: var(--c-accent);
+  transition: width .08s linear; }
+.meter-label { font-size: 12px; color: var(--c-ink-3); margin-top: 6px; }
+
+/* ---- consent -------------------------------------------------------- */
+.notice-scroll {
+  max-height: 340px; overflow-y: auto; background: var(--c-surface-2);
+  border: 1px solid var(--c-rule); border-radius: 10px; padding: 20px 22px;
+  font-size: 14px; line-height: 1.7; white-space: pre-wrap; color: var(--c-ink-2);
+}
+.agree { display: flex; gap: 11px; align-items: flex-start; margin: 18px 0 4px;
+  cursor: pointer; }
+.agree input { margin-top: 5px; width: 17px; height: 17px; accent-color: var(--c-accent); }
+.agree span { color: var(--c-ink); }
+
+.btn {
+  font: inherit; font-weight: 600; padding: 12px 22px; border-radius: 9px;
+  border: 1px solid var(--c-accent); background: var(--c-accent);
+  color: var(--c-accent-ink); cursor: pointer;
+}
+.btn.quiet { background: transparent; color: var(--c-ink-2);
+  border-color: var(--c-rule); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 3px; }
+
+.rights {
+  display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  margin-top: 18px;
+}
+.right {
+  background: var(--c-surface-2); border: 1px solid var(--c-rule);
+  border-radius: 9px; padding: 14px 16px;
+}
+.right b { display: block; font-size: 13.5px; margin-bottom: 3px; }
+.right span { font-size: 12.5px; color: var(--c-ink-3); line-height: 1.5; }
+
+.msg { font-size: 13.5px; color: var(--c-ink-3); text-align: center; margin-top: 14px; }
+.msg.bad { color: var(--c-warn); }
+.banner {
+  border-left: 3px solid var(--c-warn); background: rgba(224, 163, 62, .09);
+  border-radius: 0 9px 9px 0; padding: 16px 20px; margin-bottom: 18px;
+}
+.banner.ok { border-left-color: var(--c-ok); background: rgba(92, 189, 122, .09); }
+.banner p { margin: 0 0 8px; color: var(--c-ink-2); }
+.banner p:last-child { margin: 0; }
+.banner strong { color: var(--c-ink); }
+
+
+/* ---- countdown ------------------------------------------------------- */
+.countdown { text-align: center; padding: 34px 26px; }
+.countdown .when-label {
+  font-size: 12px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--c-ink-3); margin: 0 0 12px;
+}
+.countdown .when {
+  font-size: clamp(19px, 3vw, 25px); color: var(--c-ink); margin: 0 0 18px;
+  font-weight: 600; max-width: none;
+}
+.countdown .until {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: clamp(30px, 6vw, 46px); color: var(--c-accent); margin: 0 0 14px;
+  font-variant-numeric: tabular-nums; letter-spacing: .02em; max-width: none;
+}
+.countdown .until-note {
+  font-size: 14px; color: var(--c-ink-3); margin: 0 auto; max-width: 46ch;
+}

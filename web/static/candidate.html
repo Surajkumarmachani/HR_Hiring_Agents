@@ -1,69 +1,218 @@
 <!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Interview session</title><link rel="stylesheet" href="/static/app.css"></head><body>
-<div class="wrap">
-  <h1 id="title">Interview session</h1>
-  <p class="sub" id="sub">Loading…</p>
+<title>Your interview</title>
+<link rel="stylesheet" href="/static/candidate.css"></head><body class="cand">
+<div class="shell" id="shell">
+
+  <div class="hello">
+    <p class="org" id="org" hidden></p>
+    <h1 id="greeting">Your interview</h1>
+    <p class="role" id="role">Loading…</p>
+  </div>
 
   <div id="gate" hidden></div>
 
+  <!-- waiting for the window to open -------------------------------- -->
+  <section id="waiting" hidden>
+    <div class="panel countdown">
+      <p class="when-label">Your interview is scheduled for</p>
+      <p class="when" id="whenText">—</p>
+      <p class="until" id="untilText"></p>
+      <p class="until-note" id="untilNote">You can join from
+        <span id="opensText"></span>. This page will let you in
+        automatically — you can leave it open.</p>
+    </div>
+    <div class="panel">
+      <h2>While you wait</h2>
+      <p>Here is the notice describing what happens in the session, so you can
+         read it in your own time rather than under pressure at the start.</p>
+      <div class="notice-scroll" id="noticeEarly"></div>
+    </div>
+  </section>
+
+  <!-- window closed --------------------------------------------------- -->
+  <section id="closed" hidden>
+    <div class="banner">
+      <p><strong>This interview link has expired.</strong></p>
+      <p id="closedWhen"></p>
+      <p>Please contact whoever arranged the interview and they can send you a
+         new one.</p>
+    </div>
+  </section>
+
+  <!-- consent ------------------------------------------------------- -->
   <section id="consent" hidden>
-    <h2>Before we begin</h2>
-    <div class="notice-box" id="notice"></div>
-    <div class="card" style="margin-top:16px">
-      <p><strong>You can stop at any time</strong>, and ask us to delete everything
-         we hold about you. You do not need to give a reason.</p>
-      <label><input type="checkbox" id="agree"> I have read the notice and agree
-        to what it describes.</label>
-      <div class="row" style="margin-top:14px">
-        <button id="giveConsent" disabled>Agree and continue</button>
-        <span id="cErr" class="err"></span>
+    <div class="panel">
+      <h2>Before we begin</h2>
+      <p>Please read this. It explains what happens during the session and what
+         we do afterwards. Take as long as you need.</p>
+      <div class="notice-scroll" id="notice"></div>
+
+      <div class="rights">
+        <div class="right"><b>Stop any time</b><span>Leave the call whenever you
+          want. No reason needed.</span></div>
+        <div class="right"><b>Your camera, your control</b><span>Mute or turn off
+          your camera at any point.</span></div>
+        <div class="right"><b>Ask us to delete it</b><span>We erase everything we
+          hold about you on request.</span></div>
+      </div>
+
+      <label class="agree">
+        <input type="checkbox" id="agree">
+        <span>I have read the notice and agree to what it describes.</span>
+      </label>
+      <div style="margin-top:16px">
+        <button class="btn" id="giveConsent" disabled>Agree and continue</button>
+        <span class="msg bad" id="cErr" style="display:inline;margin-left:10px"></span>
       </div>
     </div>
   </section>
 
-  <section id="live" hidden>
-    <h2>You are connected</h2>
-    <div class="note"><p><strong>Your interviewer can see and hear you</strong>,
-      the same as any video call. Nothing is recorded or stored on your device.</p></div>
-    <video id="preview" autoplay muted playsinline></video>
-    <div class="row" style="margin-top:14px">
-      <button id="join">Join the interview</button>
-      <button id="leave" class="danger" disabled>Leave</button>
-      <span id="status" class="hint"></span>
+  <!-- lobby --------------------------------------------------------- -->
+  <section id="lobby" hidden>
+    <div class="panel">
+      <h2>Check your camera and microphone</h2>
+      <p>This is what your interviewer will see. Adjust your lighting or seating
+         now if you would like to.</p>
+
+      <div class="stage" id="lobbyStage">
+        <video id="lobbyVideo" autoplay muted playsinline></video>
+        <div class="camoff">Camera is off</div>
+      </div>
+
+      <div class="devices">
+        <div>
+          <label for="camSel">Camera</label>
+          <select id="camSel"></select>
+        </div>
+        <div>
+          <label for="micSel">Microphone</label>
+          <select id="micSel"></select>
+          <div class="meter"><i id="meter"></i></div>
+          <p class="meter-label" id="meterLabel">Say something to test your microphone.</p>
+        </div>
+      </div>
+
+      <div style="margin-top:22px;text-align:center">
+        <button class="btn" id="join">Join the interview</button>
+      </div>
+      <p class="msg" id="lobbyMsg"></p>
     </div>
-    <p class="hint" id="net"></p>
+  </section>
+
+  <!-- in call ------------------------------------------------------- -->
+  <section id="call" hidden>
+    <div class="stage" id="callStage">
+      <video id="callVideo" autoplay muted playsinline></video>
+      <div class="camoff">Your camera is off</div>
+      <div class="stage-top">
+        <span class="chip live" id="liveChip"><span class="dot"></span>
+          <span id="liveTxt">Your interviewer can see you</span></span>
+        <span class="chip timer" id="timer">00:00</span>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button class="ctl" id="micBtn" aria-pressed="false">
+        <span class="glyph"><svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V22h2v-3.08A7 7 0 0 0 19 12z"/></svg></span>
+        <span id="micLabel">Mute</span>
+      </button>
+      <button class="ctl" id="camBtn" aria-pressed="false">
+        <span class="glyph"><svg viewBox="0 0 24 24"><path d="M17 10.5V7a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-3.5l4 4v-11z"/></svg></span>
+        <span id="camLabel">Camera off</span>
+      </button>
+      <button class="ctl leave" id="leave">
+        <span class="glyph"><svg viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.7v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85a.996.996 0 0 1-1.4-.01L.29 13.08a.99.99 0 0 1 0-1.4C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.68a.99.99 0 0 1 0 1.4l-2.49 2.46a.996.996 0 0 1-1.4.01 11.5 11.5 0 0 0-2.67-1.85.998.998 0 0 1-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg></span>
+        <span>Leave</span>
+      </button>
+    </div>
+    <p class="msg" id="status"></p>
+  </section>
+
+  <!-- ended --------------------------------------------------------- -->
+  <section id="ended" hidden>
+    <div class="banner ok">
+      <p><strong>You have left the interview.</strong></p>
+      <p>Thank you for your time. You can close this page.</p>
+    </div>
   </section>
 </div>
+
 <script>
 const $ = s => document.querySelector(s);
 const SID = location.pathname.split("/")[2];
 const T = new URLSearchParams(location.search).get("t");
 const WS = location.protocol === "https:" ? "wss" : "ws";
+
 let state = null, stream = null, vws = null, aws = null;
-let frameTimer = null, audioRec = null, audioLoop = null;
+let frameTimer = null, audioRec = null, audioLoop = null, tick = null;
+let meterCtx = null, meterRaf = null, started = 0;
 const cv = document.createElement("canvas");
 
+// ---- load ------------------------------------------------------------
 async function load() {
   const r = await fetch(`/api/sessions/${SID}/candidate?t=${encodeURIComponent(T)}`);
-  if (!r.ok) { $("#sub").textContent = "This link is not valid."; return; }
+  if (!r.ok) { $("#role").textContent = "This link is not valid."; return; }
   state = await r.json();
-  $("#title").textContent = state.role || "Interview session";
-  $("#sub").textContent = `Session ${state.session_id}`;
+
+  if (state.organisation) { $("#org").textContent = state.organisation; $("#org").hidden = false; }
+  $("#greeting").textContent = state.candidate_name
+    ? `Hello, ${state.candidate_name}` : "Your interview";
+  $("#role").textContent = state.role
+    ? `You are interviewing for ${state.role}.` : "";
+
+  // The schedule gate. Enforced on the server for consent, upload and both
+  // sockets -- this is only the part the candidate sees.
+  const sch = state.schedule || {};
+  if (sch.state === "too_early") { showWaiting(sch); return; }
+  if (sch.state === "ended") {
+    $("#closed").hidden = false;
+    $("#closedWhen").textContent = sch.scheduled_at
+      ? "It was scheduled for " + fmt(sch.scheduled_at) + "." : "";
+    return;
+  }
 
   if (!state.signals_enabled) {
     $("#gate").hidden = false;
-    $("#gate").innerHTML = `<div class="note warn">
+    $("#gate").innerHTML = `<div class="banner">
       <p><strong>Camera measurement is switched off for this session.</strong></p>
       <p>${state.signals_reason}</p>
-      <p>Your interview goes ahead exactly as normal — the interviewer asks the
-      same questions and rates your answers the same way.</p></div>`;
+      <p>Your interview goes ahead exactly as normal. Your interviewer will ask
+      the same questions and assess your answers the same way.</p></div>`;
     return;
   }
   $("#notice").textContent = state.notice_markdown || "(notice unavailable)";
-  $("#consent").hidden = state.consent_given;
-  $("#live").hidden = !state.consent_given;
-  if (state.consent_given) initMedia();
+  if (state.consent_given) { $("#lobby").hidden = false; initMedia(); }
+  else $("#consent").hidden = false;
+}
+
+const fmt = iso => new Date(iso).toLocaleString(undefined,
+  {dateStyle: "full", timeStyle: "short"});
+
+function showWaiting(sch) {
+  $("#waiting").hidden = false;
+  $("#whenText").textContent = fmt(sch.scheduled_at);
+  $("#opensText").textContent = new Date(sch.opens_at)
+    .toLocaleTimeString(undefined, {hour: "2-digit", minute: "2-digit"});
+  $("#noticeEarly").textContent = state.notice_markdown || "";
+
+  // Counts down against the SERVER's clock, offset once at load. A countdown
+  // driven by the device clock would let a candidate join early simply by
+  // being wrong about the time.
+  const skew = new Date(sch.server_now).getTime() - Date.now();
+  const opens = new Date(sch.opens_at).getTime();
+  const tickDown = () => {
+    let s = Math.round((opens - (Date.now() + skew)) / 1000);
+    if (s <= 0) { location.reload(); return; }
+    const d = Math.floor(s / 86400); s -= d * 86400;
+    const h = Math.floor(s / 3600);  s -= h * 3600;
+    const m = Math.floor(s / 60),  ss = s % 60;
+    const p = n => String(n).padStart(2, "0");
+    $("#untilText").textContent = d
+      ? `Opens in ${d} day${d > 1 ? "s" : ""}, ${h} hours`
+      : `Opens in ${p(h)}:${p(m)}:${p(ss)}`;
+  };
+  tickDown(); setInterval(tickDown, 1000);
 }
 
 $("#agree").onchange = e => { $("#giveConsent").disabled = !e.target.checked; };
@@ -73,62 +222,122 @@ $("#giveConsent").onclick = async () => {
     headers:{"content-type":"application/json"},
     body: JSON.stringify({t: T, agreed: true, signals: state.signals})});
   const d = await r.json();
-  if (!r.ok) { $("#cErr").textContent = d.detail || "could not record consent"; return; }
-  $("#consent").hidden = true; $("#live").hidden = false; initMedia();
+  if (!r.ok) { $("#cErr").textContent = d.detail || "Could not record consent."; return; }
+  $("#consent").hidden = true; $("#lobby").hidden = false; initMedia();
 };
 
-async function initMedia() {
+// ---- media -----------------------------------------------------------
+async function initMedia(camId, micId) {
   try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
     stream = await navigator.mediaDevices.getUserMedia({
-      video: {width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}},
-      // AGC, echo cancellation and noise suppression all rewrite the audio.
+      video: {deviceId: camId ? {exact: camId} : undefined,
+              width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}},
+      // Echo cancellation, noise suppression and AGC all rewrite the audio.
       // Left on, the voice measures would describe the browser's processing
-      // rather than the speaker.
-      audio: {echoCancellation:false, noiseSuppression:false, autoGainControl:false}
+      // rather than the person speaking.
+      audio: {deviceId: micId ? {exact: micId} : undefined,
+              echoCancellation:false, noiseSuppression:false, autoGainControl:false}
     });
-    $("#preview").srcObject = stream;
-    $("#status").textContent = "Camera and microphone ready.";
+    $("#lobbyVideo").srcObject = stream;
+    $("#callVideo").srcObject = stream;
+    await listDevices();
+    startMeter();
+    $("#lobbyMsg").textContent = "";
   } catch (e) {
-    $("#status").textContent = "Could not access camera or microphone: " + e.message;
+    $("#lobbyMsg").className = "msg bad";
+    $("#lobbyMsg").textContent =
+      "We could not reach your camera or microphone. Check your browser's " +
+      "permissions and try again. (" + e.name + ")";
   }
 }
 
+async function listDevices() {
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const fill = (sel, kind, current) => {
+    const el = $(sel);
+    el.innerHTML = devs.filter(d => d.kind === kind).map((d, i) =>
+      `<option value="${d.deviceId}"${d.deviceId === current ? " selected" : ""}>
+        ${d.label || kind + " " + (i + 1)}</option>`).join("");
+  };
+  const v = stream.getVideoTracks()[0], a = stream.getAudioTracks()[0];
+  fill("#camSel", "videoinput", v && v.getSettings().deviceId);
+  fill("#micSel", "audioinput", a && a.getSettings().deviceId);
+}
+$("#camSel").onchange = () => initMedia($("#camSel").value, $("#micSel").value);
+$("#micSel").onchange = () => initMedia($("#camSel").value, $("#micSel").value);
+
+// A level meter, so nobody discovers a dead microphone twenty minutes in.
+function startMeter() {
+  try {
+    if (meterCtx) meterCtx.close();
+    meterCtx = new AudioContext();
+    const src = meterCtx.createMediaStreamSource(stream);
+    const an = meterCtx.createAnalyser();
+    an.fftSize = 512; src.connect(an);
+    const buf = new Uint8Array(an.frequencyBinCount);
+    let peak = 0;
+    const draw = () => {
+      an.getByteTimeDomainData(buf);
+      let m = 0;
+      for (const x of buf) m = Math.max(m, Math.abs(x - 128) / 128);
+      peak = Math.max(peak * 0.92, m);
+      $("#meter").style.width = Math.min(100, peak * 180).toFixed(0) + "%";
+      if (peak > 0.04) $("#meterLabel").textContent = "Microphone is picking you up.";
+      meterRaf = requestAnimationFrame(draw);
+    };
+    draw();
+  } catch (e) {}
+}
+
+// ---- join ------------------------------------------------------------
 $("#join").onclick = () => {
-  const v = $("#preview");
+  $("#lobby").hidden = true; $("#call").hidden = false;
+  $("#shell").classList.add("wide");
+  cancelAnimationFrame(meterRaf); if (meterCtx) meterCtx.close(), meterCtx = null;
+  started = Date.now();
+  tick = setInterval(() => {
+    const s = Math.floor((Date.now() - started) / 1000);
+    $("#timer").textContent =
+      `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+  }, 1000);
+  connectVideo(); connectAudio();
+};
+
+function connectVideo() {
+  const v = $("#callVideo");
   vws = new WebSocket(`${WS}://${location.host}/ws/candidate/${SID}?t=${encodeURIComponent(T)}`);
   vws.onopen = () => {
     frameTimer = setInterval(() => {
-      if (vws.readyState !== 1 || !v.videoWidth) return;
+      const cam = stream.getVideoTracks()[0];
+      if (vws.readyState !== 1 || !v.videoWidth || !cam || !cam.enabled) return;
       const w = 640, h = Math.round(v.videoHeight * (640 / v.videoWidth));
       cv.width = w; cv.height = h;
+      // Drawn unmirrored: the mirror is a CSS transform for the candidate's
+      // comfort and must not reach the measurement.
       cv.getContext("2d").drawImage(v, 0, 0, w, h);
       cv.toBlob(b => b && vws.readyState === 1 &&
         b.arrayBuffer().then(a => vws.send(a)), "image/jpeg", 0.7);
     }, 1000 / 12);
-    $("#status").innerHTML = '<span class="rec-dot live"></span>Connected.';
   };
   vws.onmessage = e => { try { const d = JSON.parse(e.data);
-    if (d.error) $("#status").textContent = d.error + ": " + (d.reason || "");
-  } catch (_) {} };
+    if (d.error) setStatus(d.error + ": " + (d.reason || ""), true); } catch (_) {} };
   vws.onclose = () => clearInterval(frameTimer);
+}
 
-  startAudio();
-  $("#join").disabled = true; $("#leave").disabled = false;
-};
-
-// Each audio chunk is a COMPLETE webm file. MediaRecorder writes headers only
-// on the first blob of a recording, so later blobs of one session cannot be
-// decoded alone -- restarting per chunk costs a few ms at each boundary and
-// gives the server something it can always transcribe.
-function startAudio() {
-  aws = new WebSocket(`${WS}://${location.host}/ws/audio/${SID}?t=${encodeURIComponent(T)}`);
-  const track = stream.getAudioTracks();
-  if (!track.length) return;
-  const only = new MediaStream(track);
+// Each chunk is a COMPLETE webm file. MediaRecorder writes headers only on the
+// first blob of a recording, so restarting per chunk is what makes every chunk
+// independently decodable by the transcriber.
+function connectAudio() {
+  const tracks = stream.getAudioTracks();
+  if (!tracks.length) return;
+  aws = new WebSocket(`${WS}://${location.host}/ws/audio/${SID}` +
+    `?t=${encodeURIComponent(T)}&role=candidate`);
+  const only = new MediaStream(tracks);
   const mime = ["audio/webm;codecs=opus","audio/webm"]
     .find(m => MediaRecorder.isTypeSupported(m));
   const cycle = () => {
-    if (!aws || aws.readyState !== 1) return;
+    if (!aws || aws.readyState !== 1 || !tracks[0].enabled) return;
     const parts = [];
     audioRec = new MediaRecorder(only, {mimeType: mime});
     audioRec.ondataavailable = e => e.data.size && parts.push(e.data);
@@ -144,29 +353,53 @@ function startAudio() {
   aws.onclose = () => clearInterval(audioLoop);
 }
 
-$("#leave").onclick = () => {
-  clearInterval(frameTimer); clearInterval(audioLoop);
-  try { audioRec && audioRec.state !== "inactive" && audioRec.stop(); } catch (_) {}
-  vws && vws.close(); aws && aws.close();
-  stream.getTracks().forEach(t => t.stop());
-  $("#leave").disabled = true;
-  $("#status").textContent = "Disconnected. You can close this page.";
+// ---- controls --------------------------------------------------------
+$("#micBtn").onclick = () => {
+  const a = stream.getAudioTracks()[0]; if (!a) return;
+  a.enabled = !a.enabled;
+  $("#micBtn").setAttribute("aria-pressed", String(!a.enabled));
+  $("#micLabel").textContent = a.enabled ? "Mute" : "Unmute";
+  setStatus(a.enabled ? "" : "Your microphone is muted.");
 };
 
+$("#camBtn").onclick = () => {
+  const v = stream.getVideoTracks()[0]; if (!v) return;
+  v.enabled = !v.enabled;
+  $("#camBtn").setAttribute("aria-pressed", String(!v.enabled));
+  $("#camLabel").textContent = v.enabled ? "Camera off" : "Camera on";
+  $("#callStage").classList.toggle("off", !v.enabled);
+  // Frames stop when the camera is off, and the live chip says so rather than
+  // leaving the candidate to guess whether they are still visible.
+  $("#liveChip").classList.toggle("live", v.enabled);
+  $("#liveTxt").textContent = v.enabled
+    ? "Your interviewer can see you" : "Your interviewer cannot see you";
+};
+
+$("#leave").onclick = () => {
+  clearInterval(frameTimer); clearInterval(audioLoop); clearInterval(tick);
+  try { audioRec && audioRec.state !== "inactive" && audioRec.stop(); } catch (_) {}
+  vws && vws.close(); aws && aws.close();
+  stream && stream.getTracks().forEach(t => t.stop());
+  $("#call").hidden = true; $("#ended").hidden = false;
+  $("#shell").classList.remove("wide");
+};
+
+function setStatus(msg, bad) {
+  $("#status").textContent = msg || "";
+  $("#status").className = "msg" + (bad ? " bad" : "");
+}
+
 setInterval(async () => {
-  if (!state) return;
+  if (!state || !started) return;
   const t0 = performance.now();
   try {
     await fetch(`/api/sessions/${SID}/telemetry`, {method:"POST",
       headers:{"content-type":"application/json"},
-      body: JSON.stringify({client_ms: Date.now(), role:"candidate", rtt_ms: null})});
+      body: JSON.stringify({client_ms: Date.now(), role:"candidate", rtt_ms:null})});
     const rtt = performance.now() - t0;
-    const r = await fetch(`/api/sessions/${SID}/telemetry`, {method:"POST",
+    await fetch(`/api/sessions/${SID}/telemetry`, {method:"POST",
       headers:{"content-type":"application/json"},
       body: JSON.stringify({client_ms: Date.now(), role:"candidate", rtt_ms: rtt})});
-    const d = await r.json();
-    if (d.jitter_ms != null) $("#net").textContent =
-      `connection: ${Math.round(rtt)} ms round trip, ${d.jitter_ms} ms jitter`;
   } catch (e) {}
 }, 5000);
 

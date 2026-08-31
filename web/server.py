@@ -39,7 +39,7 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import (FastAPI, HTTPException, Request, UploadFile, File,
                      Form, WebSocket, WebSocketDisconnect)
@@ -114,10 +114,28 @@ def signals_permitted(region, policy):
 class Session:
     """One interview: a candidate, a panel, a guide, and its recordings."""
 
-    def __init__(self, sid, guide, candidate_ref, panel, region_policy):
+    def __init__(self, sid, guide, candidate_ref, panel, region_policy,
+                 candidate_name=None, organisation=None, scheduled_at=None,
+                 duration_minutes=60, early_join_minutes=10,
+                 late_grace_minutes=30):
         self.id = sid
         self.guide = guide
         self.candidate_ref = candidate_ref
+        # Display name for the humans in the call. The RECORD is keyed on
+        # candidate_ref; this is only so the candidate sees their own name and
+        # the interviewer knows who they are talking to. It is never written
+        # into the measurement output.
+        self.candidate_name = candidate_name or None
+        self.organisation = organisation or None
+
+        # Scheduling. A link that works the moment it is sent is a link that
+        # can be used at 3am by whoever it was forwarded to; the window is the
+        # control. Enforced on every candidate-facing endpoint, not by hiding
+        # the join button.
+        self.scheduled_at = scheduled_at            # aware datetime, or None
+        self.duration_minutes = int(duration_minutes)
+        self.early_join_minutes = int(early_join_minutes)
+        self.late_grace_minutes = int(late_grace_minutes)
         self.created_at = _now()
         self.region_policy = region_policy
         self.candidate_token = secrets.token_urlsafe(16)
@@ -132,6 +150,47 @@ class Session:
         self.telemetry = []
         self.signals_enabled = None
         self.signals_reason = None
+
+    # ---------------------------------------------------------- schedule
+    def window(self):
+        """(opens_at, closes_at) or (None, None) when unscheduled."""
+        if not self.scheduled_at:
+            return None, None
+        return (self.scheduled_at - timedelta(minutes=self.early_join_minutes),
+                self.scheduled_at + timedelta(minutes=self.duration_minutes
+                                              + self.late_grace_minutes))
+
+    def schedule_state(self):
+        """What the candidate is allowed to do right now, and why."""
+        if not self.scheduled_at:
+            return {"state": "open", "scheduled_at": None,
+                    "reason": "no time set for this session"}
+        now = datetime.now(timezone.utc)
+        opens, closes = self.window()
+        base = {
+            "scheduled_at": self.scheduled_at.isoformat(),
+            "opens_at": opens.isoformat(),
+            "closes_at": closes.isoformat(),
+            "duration_minutes": self.duration_minutes,
+            "early_join_minutes": self.early_join_minutes,
+            "server_now": now.isoformat(),
+        }
+        if now < opens:
+            return {**base, "state": "too_early",
+                    "seconds_until_open": int((opens - now).total_seconds()),
+                    "reason": (f"this interview opens "
+                               f"{self.early_join_minutes} minutes before its "
+                               f"start time")}
+        if now > closes:
+            return {**base, "state": "ended",
+                    "reason": "the scheduled window for this interview has "
+                              "closed"}
+        return {**base, "state": "open",
+                "seconds_left": int((closes - now).total_seconds())}
+
+    def joinable(self):
+        st = self.schedule_state()
+        return st["state"] == "open", st
 
     # ------------------------------------------------------------ jitter
     def network_jitter_ms(self):
@@ -158,7 +217,10 @@ class Session:
         return {
             "session_id": self.id,
             "candidate_ref": self.candidate_ref,
+            "candidate_name": self.candidate_name,
+            "organisation": self.organisation,
             "created_at": self.created_at,
+            "schedule": self.schedule_state(),
             "guide": {"id": self.guide.id, "version": self.guide.version,
                       "digest": self.guide.digest()},
             "panel": sorted(self.interviewer_tokens),
@@ -225,13 +287,36 @@ async def create_session(request: Request):
     if not candidate:
         raise HTTPException(400, "a candidate reference is required")
 
+    scheduled = None
+    raw = (body.get("scheduled_at") or "").strip()
+    if raw:
+        try:
+            scheduled = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(400, f"scheduled_at is not a valid datetime: "
+                                     f"{raw!r}")
+        if scheduled.tzinfo is None:
+            # A naive time is ambiguous the moment the candidate is in another
+            # zone. Refuse rather than assume the server's clock is theirs.
+            raise HTTPException(
+                400, "scheduled_at needs a timezone offset. A time without one "
+                     "means something different to a candidate in another "
+                     "country, which is exactly who a link gets sent to.")
+        scheduled = scheduled.astimezone(timezone.utc)
+
     sid = datetime.now().strftime("%Y%m%d-%H%M%S")
     s = Session(sid, guide, candidate, panel,
-                body.get("region_policy", "strict"))
+                body.get("region_policy", "strict"),
+                candidate_name=(body.get("candidate_name") or "").strip()[:80],
+                organisation=(body.get("organisation") or "").strip()[:80],
+                scheduled_at=scheduled,
+                duration_minutes=int(body.get("duration_minutes") or 60),
+                early_join_minutes=int(body.get("early_join_minutes") or 10))
     SESSIONS[sid] = s
     s.save()
     return {
         "session_id": sid,
+        "schedule": s.schedule_state(),
         "candidate_url": f"/c/{sid}?t={s.candidate_token}",
         "interviewer_urls": {p: f"/i/{sid}/{p}?t={t}"
                              for p, t in s.interviewer_tokens.items()},
@@ -254,13 +339,22 @@ def candidate_state(sid: str, t: str, request: Request):
     if os.path.exists(notice_path):
         with open(notice_path) as fh:
             notice = fh.read()
+    ok, sched = s.joinable()
     return {
         "session_id": sid,
         "role": s.guide.role,
+        "candidate_name": s.candidate_name,
+        "organisation": s.organisation,
+        "schedule": sched,
+        "joinable": ok,
         "signals_enabled": allowed,
         "signals_reason": reason,
         "region": region,
         "consent_given": s.consent is not None,
+        # The notice is readable before the window opens. Consent has to be
+        # informed, and giving someone time to read it beforehand serves that;
+        # what is withheld early is the ability to consent and to join, not
+        # the information.
         "notice_markdown": notice,
         "notice_version": consent_mod.NOTICE_VERSION,
         "signals": ["video_facial_features", "upper_body_pose",
@@ -276,10 +370,20 @@ async def give_consent(sid: str, request: Request):
         raise HTTPException(403, "invalid link")
     if not body.get("agreed"):
         raise HTTPException(400, "consent was not given")
-    if not s.signals_enabled:
+    ok, sched = s.joinable()
+    if not ok:
+        raise HTTPException(403, f"{sched['reason']} "
+                                 f"(state: {sched['state']})")
+    # Evaluate the regional gate here rather than trusting a value the
+    # candidate GET happened to leave behind. Depending on that side effect
+    # meant a client which POSTed consent without first loading the page was
+    # refused with "disabled: None", which says nothing to anyone.
+    region = client_region(request)
+    allowed, why = signals_permitted(region, s.region_policy)
+    s.signals_enabled, s.signals_reason = allowed, why
+    if not allowed:
         raise HTTPException(
-            403, f"signal capture is disabled for this session: "
-                 f"{s.signals_reason}")
+            403, f"signal capture is disabled for this session: {why}")
     s.consent = {
         "agreed_at": _now(),
         "notice_version": consent_mod.NOTICE_VERSION,
@@ -321,6 +425,10 @@ async def upload(sid: str, t: str = Form(...), role: str = Form(...),
     if role == "candidate":
         if not secrets.compare_digest(s.candidate_token, t or ""):
             raise HTTPException(403, "invalid link")
+        ok, sched = s.joinable()
+        if not ok:
+            raise HTTPException(403, f"{sched['reason']} "
+                                     f"(state: {sched['state']})")
         if not s.consent:
             raise HTTPException(
                 403, "no consent recorded for this session; nothing may be "
@@ -357,6 +465,8 @@ def interview_state(sid: str, who: str, t: str):
         "session_id": sid,
         "role": iv.role,
         "candidate_ref": iv.candidate_ref,
+        "candidate_name": s.candidate_name,
+        "organisation": s.organisation,
         "guide": {"id": s.guide.id, "version": s.guide.version,
                   "digest": s.guide.digest()},
         "questions": [{"id": q.id, "text": q.text,
@@ -452,13 +562,20 @@ async def decide(sid: str, request: Request):
 async def ws_candidate(ws: WebSocket, sid: str, t: str = ""):
     """Candidate sends downscaled JPEG frames; the server measures them.
 
-    The full-quality recording still happens locally in the browser and is
-    uploaded at the end -- that upload is the authoritative measurement. This
-    stream exists so the interviewer can see the candidate and notice when the
-    capture has gone bad, not to produce the record.
+    This stream is the measurement: nothing is recorded on the candidate's
+    device. It is gated on the schedule window, the regional policy and
+    consent, in that order, and every refusal is delivered as JSON before the
+    socket closes so the page can say which one it was.
     """
     s = SESSIONS.get(sid)
     if not s or not secrets.compare_digest(s.candidate_token, t or ""):
+        await ws.close(code=4403)
+        return
+    ok, sched = s.joinable()
+    if not ok:
+        await ws.accept()
+        await ws.send_json({"error": "outside the scheduled window",
+                            "reason": sched["reason"], "schedule": sched})
         await ws.close(code=4403)
         return
     if not s.signals_enabled:
@@ -495,39 +612,72 @@ async def ws_candidate(ws: WebSocket, sid: str, t: str = ""):
 
 
 @app.websocket("/ws/audio/{sid}")
-async def ws_audio(ws: WebSocket, sid: str, t: str = ""):
-    """Candidate audio in, transcript out to the interviewer.
+async def ws_audio(ws: WebSocket, sid: str, t: str = "", role: str = "candidate"):
+    """One speaker's audio in, attributed transcript out.
 
-    Separate socket from the video frames so a slow transcription cannot
-    delay the frame path -- the interviewer keeps seeing the candidate even
-    while Whisper is working on the previous chunk.
+    `role` is "candidate" or an interviewer's name, and the token must match
+    that role -- so a speaker label cannot be spoofed by relabelling a socket.
+    Each side sends its own microphone from its own browser, which is why the
+    transcript needs no diarisation: the speaker is the socket.
+
+    Separate socket from the video frames so a slow transcription cannot delay
+    the frame path; the interviewer keeps seeing the candidate while Whisper is
+    still working on the previous chunk.
     """
     s = SESSIONS.get(sid)
-    if not s or not secrets.compare_digest(s.candidate_token, t or ""):
-        await ws.close(code=4403)
-        return
-    if not s.signals_enabled or not s.consent:
-        await ws.accept()
-        await ws.send_json({"error": "not permitted",
-                            "reason": s.signals_reason or "no consent"})
-        await ws.close(code=4403)
+    if not s:
+        await ws.close(code=4404)
         return
 
+    speaker = "candidate" if role == "candidate" else _slug(role)
+    if speaker == "candidate":
+        if not secrets.compare_digest(s.candidate_token, t or ""):
+            await ws.close(code=4403)
+            return
+        ok, sched = s.joinable()
+        if not ok:
+            await ws.accept()
+            await ws.send_json({"error": "outside the scheduled window",
+                                "reason": sched["reason"]})
+            await ws.close(code=4403)
+            return
+        # The candidate's audio is a measured signal, so it is gated. The
+        # interviewer's is not -- they are staff, not a data subject here.
+        if not s.signals_enabled or not s.consent:
+            await ws.accept()
+            await ws.send_json({"error": "not permitted",
+                                "reason": s.signals_reason or "no consent"})
+            await ws.close(code=4403)
+            return
+    else:
+        if speaker not in s.interviewer_tokens or not secrets.compare_digest(
+                s.interviewer_tokens[speaker], t or ""):
+            await ws.close(code=4403)
+            return
+
     await ws.accept()
-    tr = HUB.transcriber(sid)
-    t0 = time.time()
+    tr = HUB.transcriber(sid, speaker)
+    builder = HUB.builder(sid)
+    t0 = HUB.clock(sid)
     try:
         while True:
             chunk = await ws.receive_bytes()
             seg = await tr.add(chunk, time.time() - t0)
-            if seg:
+            if not seg:
+                continue
+            # The builder decides whether this continues the line already on
+            # screen or starts a new one. Line structure is computed once, on
+            # the server, so both sides show the same transcript.
+            # Anchor on where the chunk's audio began, not when it arrived.
+            for update in builder.add(speaker, seg,
+                                      seg.get("audio_start", seg["t"])):
                 await HUB.broadcast(sid, measures={
-                    "type": "transcript", "segment": seg,
+                    "type": "transcript", **update,
                     "dropped": tr.chunks_dropped, "seen": tr.chunks_seen})
     except WebSocketDisconnect:
         pass
     finally:
-        HUB.drop_audio(sid)
+        HUB.drop_audio(sid, speaker)
 
 
 @app.websocket("/ws/interviewer/{sid}/{who}")

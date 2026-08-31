@@ -226,6 +226,31 @@ class TextConfig:
     speaker. Measured at 0.79 on a 12 dB SNR recording, where mis-transcribed
     words moved both specificity and STAR."""
 
+    # --- transcript line breaking ---------------------------------------
+    transcript_pause_sec: float = 1.1
+    """Silence long enough to end a line. Below this the speaker is still
+    going, so their words belong on the line they started -- the 6 s chunk
+    boundary is a transport artefact and must never become a line break."""
+
+    transcript_sentence_pause_sec: float = 0.45
+    """A shorter pause is enough to break IF the previous line already ended
+    on . ! or ?. Sentence end plus a breath is a new thought; sentence end
+    with no pause is usually a comma the transcriber wrote as a full stop."""
+
+    transcript_chunk_gap_allowance_sec: float = 0.35
+    """Silence to discount at a chunk boundary. The browser restarts its
+    recorder per chunk (6.0 s of audio on a 6.2 s cycle) and Whisper's VAD
+    trims leading silence, so every boundary carries ~0.25-0.55 s of gap that
+    the speaker did not produce. Left uncompensated it cleared the sentence
+    threshold by itself and broke a line at every chunk -- the exact artefact
+    this whole builder exists to remove. Applies only at boundaries; a pause
+    measured between words inside one chunk is real."""
+
+    transcript_max_line_sec: float = 40.0
+    transcript_max_line_chars: int = 320
+    """Caps, so someone talking for ten minutes does not produce one
+    unreadable paragraph. A break forced by a cap is marked as continued."""
+
     star_component_threshold: float = 0.45
     """Cosine similarity above which a STAR component counts as present.
 
