@@ -35,6 +35,9 @@ jobs:
           python3 tests/test_rppg.py
           python3 tests/test_face.py
 
+      - name: Property tests (windowing, geometry, output contracts)
+        run: python3 tests/test_properties.py
+
       - name: End-to-end selftest (synthetic frames)
         run: python3 run_live.py --selftest
 

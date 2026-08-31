@@ -36,6 +36,26 @@ def ensure_model(path: str = None) -> str:
     return models.ensure_model("pose_landmarker.task", path)
 
 
+def shoulder_tilt_deg(ls, rs) -> float:
+    """Signed tilt of the shoulder line, in degrees, folded onto (-90, 90].
+
+    ls, rs are 2-vectors in image coordinates (x right, y DOWN).
+
+    The fold is the whole point. atan2 over the raw shoulder vector returns
+    ~180 deg for level shoulders whenever the right landmark sits left of the
+    left one in image coords -- which is the ordinary case, not an edge case.
+    v1.1 reported 174.7 deg for a level pair. Folding gives 0 for level and
+    keeps the sign meaningful: positive when the right shoulder is higher in
+    the image, negative when the left is.
+    """
+    tilt = float(np.degrees(np.arctan2(rs[1] - ls[1], rs[0] - ls[0] + 1e-9)))
+    if tilt > 90.0:
+        tilt -= 180.0
+    elif tilt <= -90.0:
+        tilt += 180.0
+    return tilt
+
+
 class BodyAnalyzer:
     def __init__(self, fps: float = 30.0, model_path: str = None, cfg=None):
         import mediapipe as mp
@@ -86,17 +106,7 @@ class BodyAnalyzer:
         if sh_w < 1e-6:
             return None
 
-        # atan2 over the shoulder vector returns ~180 deg for level shoulders
-        # whenever the right landmark sits left of the left one in image
-        # coords, which is the normal case. Fold onto (-90, 90] so a level
-        # line reads 0 and the sign still tells you which side is high.
-        tilt = float(np.degrees(np.arctan2(rs[1] - ls[1],
-                                           rs[0] - ls[0] + 1e-9)))
-        if tilt > 90.0:
-            tilt -= 180.0
-        elif tilt <= -90.0:
-            tilt += 180.0
-        f["shoulder_tilt_deg"] = tilt
+        f["shoulder_tilt_deg"] = shoulder_tilt_deg(ls, rs)
         # Proximity proxy for FACS 57/58. Shoulder width in normalised image
         # coords grows as the subject leans towards the camera.
         if self._base_shoulder_w is None and sh_w > self.cfg.min_shoulder_width:

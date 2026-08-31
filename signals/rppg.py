@@ -153,6 +153,14 @@ class POSEstimator:
                 delta = float(np.clip(0.5 * (y0 - y2) / denom, -0.5, 0.5))
                 peak_f = freqs[peak_i] + delta * (freqs[1] - freqs[0])
 
+        # Interpolation refines the peak by up to half a bin (0.0625 Hz here,
+        # 3.75 BPM), which for a peak sitting on the edge bin can carry the
+        # estimate OUTSIDE the band we claim to search -- measured at 183.3 BPM
+        # against a declared ceiling of 180. Clamp: a rate outside the
+        # plausibility band is not a rate this module is willing to assert.
+        peak_f = float(np.clip(peak_f, self.cfg.search_low_hz,
+                               self.cfg.search_high_hz))
+
         bpm = float(peak_f * 60.0)
 
         # SQI: power within +/-0.2 Hz of the peak and of its 2nd harmonic

@@ -4,6 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 echo "== model weights =="        && python3 fetch_models.py --verify
 echo "== DSP validation =="       && python3 tests/test_rppg.py && python3 tests/test_face.py
+echo "== property tests =="       && python3 tests/test_properties.py
 echo "== end-to-end selftest ==" && python3 run_live.py --selftest
 echo "== dependency pins =="     && python3 -c "
 import mediapipe, sys
