@@ -91,6 +91,28 @@ def _head_pose(matrix: np.ndarray):
     return yaw, pitch, roll
 
 
+def head_pose_aus(yaw: float, pitch: float, roll: float) -> dict:
+    """FACS 51-56 as normalised head-position intensities in [0, 1].
+
+    The divisor sets what counts as full deflection -- 45 deg of yaw, 30 of
+    pitch and roll. Beyond that the AU is SATURATED, not more-than-full.
+
+    The clamp is load-bearing. Without it an 85 deg turn emitted 1.88 and roll
+    reached 2.66, against a catalogue declaring these 0.0-1.0, so anything
+    treating them as a normalised intensity read an out-of-scale number. Kept
+    as a free function so the range oracle exercises this code rather than a
+    copy of the formula.
+    """
+    def norm(value, full_scale_deg):
+        return float(np.clip(max(0.0, value) / full_scale_deg, 0.0, 1.0))
+
+    return {
+        "AU51": norm(yaw, 45.0),    "AU52": norm(-yaw, 45.0),
+        "AU53": norm(-pitch, 30.0), "AU54": norm(pitch, 30.0),
+        "AU55": norm(roll, 30.0),   "AU56": norm(-roll, 30.0),
+    }
+
+
 class BlinkDetector:
     """Hysteresis blink counter over the AU45 (eyeBlink) proxy.
 
@@ -164,6 +186,7 @@ class FaceAnalyzer:
         self.blink = BlinkDetector(cfg=self._cfg_root)
         self._prev_yaw = None
         self._prev_pitch = None
+        self.last_landmarks_px = None
         self.head_motion = deque(maxlen=int(fps * self.cfg.head_motion_window_sec))
         self.gaze_on_camera = deque(maxlen=int(fps * self.cfg.gaze_window_sec))
 
@@ -184,6 +207,7 @@ class FaceAnalyzer:
         mp_img = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
         res = self.landmarker.detect_for_video(mp_img, timestamp_ms)
         if not res.face_landmarks:
+            self.last_landmarks_px = None
             return None, None
 
         lm = res.face_landmarks[0]
@@ -198,12 +222,7 @@ class FaceAnalyzer:
         else:
             yaw = pitch = roll = 0.0
         f.update(head_yaw=yaw, head_pitch=pitch, head_roll=roll)
-        f["AU51"] = max(0.0, yaw) / 45.0
-        f["AU52"] = max(0.0, -yaw) / 45.0
-        f["AU53"] = max(0.0, -pitch) / 30.0
-        f["AU54"] = max(0.0, pitch) / 30.0
-        f["AU55"] = max(0.0, roll) / 30.0
-        f["AU56"] = max(0.0, -roll) / 30.0
+        f.update(head_pose_aus(yaw, pitch, roll))
         # 57/58 (forward/back) need depth; approximate from face scale in body.py
         f["AU57"] = f["AU58"] = 0.0
 
@@ -249,6 +268,11 @@ class FaceAnalyzer:
         rois = {"forehead": poly(FOREHEAD_IDX),
                 "cheek_l": poly(LCHEEK_IDX),
                 "cheek_r": poly(RCHEEK_IDX)}
+        # Full landmark set in pixels, for the Group F capture-quality measures
+        # (face-region illumination and resolution). Kept out of the feature
+        # dict: it is geometry the quality module consumes, not a parameter.
+        self.last_landmarks_px = np.array([[p.x * w, p.y * h] for p in lm],
+                                          dtype=np.float32)
         return f, rois
 
     def close(self):

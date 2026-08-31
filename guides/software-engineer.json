@@ -1,0 +1,125 @@
+{
+  "id": "swe-backend",
+  "role": "Backend Software Engineer",
+  "version": "1.0",
+  "_note": "Anchors are written BEFORE any candidate is seen, so they cannot be shaped by one. Every competency is a behaviour observable in an answer. Replace the content for your roles; keep the shape.",
+
+  "competencies": [
+    {
+      "id": "problem_decomposition",
+      "name": "Problem decomposition",
+      "definition": "Breaks an ambiguous problem into tractable parts, states assumptions, and identifies what would need to be true for the approach to work.",
+      "weight": 1.5,
+      "anchors": [
+        {"score": 1, "label": "Does not decompose", "description": "Jumps to a solution without restating the problem. Assumptions stay implicit. When the problem is underspecified, either guesses silently or stalls."},
+        {"score": 2, "label": "Partial", "description": "Identifies one or two sub-problems but misses a major one. States some assumptions when prompted, not spontaneously."},
+        {"score": 3, "label": "Solid", "description": "Breaks the problem into sensible parts and states assumptions unprompted. Asks at least one clarifying question before solving."},
+        {"score": 4, "label": "Strong", "description": "Decomposition is clean and the parts are independently testable. Names what would falsify the approach. Prioritises which part to attack first and says why."},
+        {"score": 5, "label": "Exceptional", "description": "Reframes the problem in a way that makes it materially simpler, and justifies the reframing against the original constraints."}
+      ]
+    },
+    {
+      "id": "technical_depth",
+      "name": "Technical depth",
+      "definition": "Understands the systems they have worked on below the API surface, including failure modes and trade-offs actually encountered.",
+      "weight": 1.5,
+      "anchors": [
+        {"score": 1, "label": "Surface only", "description": "Describes what a system did but not how. Cannot explain a choice beyond 'that is what we used'."},
+        {"score": 2, "label": "Shallow", "description": "Explains mechanism for the parts they wrote, but not the boundaries. Trade-offs are recited rather than reasoned."},
+        {"score": 3, "label": "Solid", "description": "Explains mechanism and at least one trade-off they made, with the reason. Knows a real failure mode of their system."},
+        {"score": 4, "label": "Strong", "description": "Explains a failure they diagnosed, how they localised it, and what the fix cost. Can say what they would do differently."},
+        {"score": 5, "label": "Exceptional", "description": "Explains a non-obvious interaction between components and why it was hard to see. Quantifies the impact."}
+      ]
+    },
+    {
+      "id": "code_quality_judgement",
+      "name": "Judgement about code quality",
+      "definition": "Distinguishes changes that reduce future cost from changes that only look tidier, and can say which they would skip under time pressure.",
+      "weight": 1.0,
+      "anchors": [
+        {"score": 1, "label": "No basis", "description": "Quality is stated as rules without reasons, or dismissed entirely."},
+        {"score": 2, "label": "Rule-following", "description": "Cites conventions correctly but cannot say what problem each prevents."},
+        {"score": 3, "label": "Solid", "description": "Ties at least one practice to a concrete cost it avoided. Recognises that some quality work is not worth doing."},
+        {"score": 4, "label": "Strong", "description": "Gives an example of deliberately accepting debt, the reason, and how it was tracked or repaid."},
+        {"score": 5, "label": "Exceptional", "description": "Articulates how they decide, not just what they decided, and applies it to an unfamiliar example in the interview."}
+      ]
+    },
+    {
+      "id": "collaboration_under_disagreement",
+      "name": "Collaboration under disagreement",
+      "definition": "Handles technical disagreement in a way that reaches a decision and keeps the working relationship intact.",
+      "weight": 1.0,
+      "anchors": [
+        {"score": 1, "label": "Avoids or escalates", "description": "Either did not raise the disagreement or went straight to a manager. Describes colleagues as the obstacle."},
+        {"score": 2, "label": "Positional", "description": "Restated their own position more forcefully. Resolution came from seniority or exhaustion rather than evidence."},
+        {"score": 3, "label": "Solid", "description": "Sought the other person's reasoning and can state it accurately. A decision was reached and they supported it."},
+        {"score": 4, "label": "Strong", "description": "Changed position on evidence at least once, or found a test that settled it. Names what they got wrong."},
+        {"score": 5, "label": "Exceptional", "description": "Converted the disagreement into a shared criterion the team reused afterwards."}
+      ]
+    },
+    {
+      "id": "communicating_to_non_specialists",
+      "name": "Communicating to non-specialists",
+      "definition": "Explains technical constraints to someone without the background, so they can make a decision.",
+      "weight": 1.0,
+      "anchors": [
+        {"score": 1, "label": "Does not adapt", "description": "Same jargon regardless of audience. Answers the question they wanted rather than the one asked."},
+        {"score": 2, "label": "Simplifies inaccurately", "description": "Removes jargon but loses the constraint that mattered, leaving the listener with a wrong model."},
+        {"score": 3, "label": "Solid", "description": "Explains the constraint in the listener's terms and checks understanding."},
+        {"score": 4, "label": "Strong", "description": "Frames the constraint as options with costs, so a non-specialist can actually choose."},
+        {"score": 5, "label": "Exceptional", "description": "Surfaces the decision the listener did not know they had, and equips them to make it."}
+      ]
+    }
+  ],
+
+  "questions": [
+    {
+      "id": "q1",
+      "text": "Tell me about a system you worked on where the hardest part was not the code. What made it hard, and how did you approach it?",
+      "competencies": ["problem_decomposition", "technical_depth"],
+      "probes": [
+        "What did you assume at the start that turned out to be wrong?",
+        "What would have had to be true for a simpler approach to work?",
+        "How did you decide what to tackle first?"
+      ]
+    },
+    {
+      "id": "q2",
+      "text": "Describe a production failure you diagnosed. Take me through how you localised it.",
+      "competencies": ["technical_depth", "problem_decomposition"],
+      "probes": [
+        "What did you rule out, and how?",
+        "What did the fix cost, and what did you trade away?",
+        "What would you do differently now?"
+      ]
+    },
+    {
+      "id": "q3",
+      "text": "Tell me about a time you deliberately shipped something you knew was not the right long-term solution.",
+      "competencies": ["code_quality_judgement"],
+      "probes": [
+        "How did you decide that was the right call?",
+        "How was it tracked afterwards? What actually happened to it?"
+      ]
+    },
+    {
+      "id": "q4",
+      "text": "Tell me about a technical disagreement with a colleague where you did not get your way.",
+      "competencies": ["collaboration_under_disagreement"],
+      "probes": [
+        "What was their reasoning? State it as they would.",
+        "What happened after the decision was made?",
+        "Looking back, who was right?"
+      ]
+    },
+    {
+      "id": "q5",
+      "text": "Explain a technical constraint you had to get a non-technical stakeholder to accept. How did you explain it?",
+      "competencies": ["communicating_to_non_specialists", "collaboration_under_disagreement"],
+      "probes": [
+        "What did they think before the conversation?",
+        "What decision did they end up making?"
+      ]
+    }
+  ]
+}

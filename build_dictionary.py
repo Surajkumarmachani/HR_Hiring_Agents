@@ -294,9 +294,13 @@ D = [
      "Dynamic range of delivery; flat values read as monotone",
      "Automatic gain control flattens this at source"),
 ]
+# WP2 implements 17 of 19. D4 disfluency is expressed "per 100 words", so it
+# needs a transcript -- that is WP4 (Group E), and counting "um" without one
+# means guessing at a number aimed at a candidate.
+D_NEEDS_TRANSCRIPT = {"filled_pause_rate", "repair_rate"}
 for key, name, unit, sub, meas, conf in D:
     add(f"audio.{key}", "D Vocal prosody", sub, name, "Derived", unit, 10, M,
-        meas, conf, P1)
+        meas, conf, P1 if key in D_NEEDS_TRANSCRIPT else IMPL)
 
 # ---------------------------------------------------------------- Group E
 E = [
@@ -321,9 +325,12 @@ E = [
      "Semantic match between the answer and the question asked",
      "Requires a good embedding model and a defined question set"),
 ]
+# WP4 implements all seven. Content is the defensible assessment channel:
+# it is about the work, it can be quoted back to a rejected candidate, and
+# it does not move with lighting, facial hair or skin tone.
 for key, name, unit, meas, conf in E:
     add(f"text.{key}", "E Linguistic content", "E1 Answer structure", name,
-        "Derived", unit, 0, M, meas, conf, P1)
+        "Derived", unit, 0, M, meas, conf, IMPL)
 
 # ---------------------------------------------------------------- Group F
 F = [
@@ -334,22 +341,28 @@ F = [
      "Fraction of frames with a face. Below 0.6 the session is not analysable",
      "The primary go/no-go gate", IMPL),
     ("illumination_mean", "Illumination level", "0-255", 1,
-     "Mean luminance over the face region", "Backlighting is the common failure", P1),
+     "Mean luminance over the face region", "Backlighting is the common failure", IMPL),
     ("illumination_stability", "Illumination stability", "SD over 10 s", 1,
      "Lighting flicker. Instability corrupts rPPG directly",
-     "Screen glow changes colour as the interviewer's video changes", P1),
+     "Screen glow changes colour as the interviewer's video changes", IMPL),
     ("frame_drop_rate", "Frame drop rate", "dropped/s", 1,
      "Capture gaps. Above ~10% the rPPG window is no longer uniformly sampled",
-     "CPU contention and network", P1),
+     "CPU contention and network", IMPL),
     ("resolution", "Capture resolution", "pixels", 0,
      "Face bounding-box size in pixels; small faces degrade AU detection",
-     "Sitting distance", P1),
+     "Sitting distance", IMPL),
     ("audio_snr", "Audio SNR", "dB", 1,
      "Speech-to-background ratio. Below ~15 dB, voice-quality features are noise",
-     "Open-plan rooms, fans, traffic", P1),
+     "Open-plan rooms, fans, traffic", IMPL),
     ("network_jitter", "Network jitter", "ms", 1,
      "Needed to separate real response latency from transport delay",
-     "Must be logged or latency features are meaningless", P1),
+     "Must be logged or latency features are meaningless", IMPL),
+    ("frame_drop_fraction", "Frame drop fraction", "0.0-1.0", 1,
+     "Dropped frames as a share of those expected; the scale-free form of "
+     "frame_drop_rate", "CPU contention and network", IMPL),
+    ("face_bbox_px", "Face bounding box", "pixels [w, h]", 1,
+     "Face box dimensions; resolution is its smaller side",
+     "Sitting distance and camera field of view", IMPL),
 ]
 for key, name, unit, rate, meas, conf, st in F:
     add(f"quality.{key}", "F Session integrity", "F1 Capture quality", name,

@@ -126,15 +126,39 @@ class BodyAnalyzer:
         self.hands_visible.append(1.0 if wr_vis else 0.0)
         f["hands_visible_ratio"] = float(np.mean(self.hands_visible))
 
+        # Gesture metrics are reported ONLY while the wrists are actually
+        # visible, and only across contiguous samples.
+        #
+        # v1.1 got both wrong. It appended to wrist_hist only when visible but
+        # computed from it unconditionally, so once the hands left frame the
+        # buffer froze and kept publishing gesture_energy from stale positions
+        # while hands_visible_ratio correctly read 0.00 -- observed live at
+        # hands_visible 0.00 with gesture_energy 0.049. And because samples
+        # were appended only on visible frames, np.diff spanned the gaps: a
+        # hand leaving at one side of frame and returning at the other
+        # produced one enormous "gesture" from a jump that never happened.
         if wr_vis:
-            self.wrist_hist.append(np.concatenate([P(L_WR), P(R_WR)]))
-        if len(self.wrist_hist) > 2:
-            d = np.diff(np.asarray(self.wrist_hist), axis=0)
-            f["gesture_energy"] = float(np.abs(d).mean() / sh_w)
-            f["gesture_amplitude"] = float(
-                np.asarray(self.wrist_hist).std(axis=0).mean() / sh_w)
+            self.wrist_hist.append((timestamp_ms / 1000.0,
+                                    np.concatenate([P(L_WR), P(R_WR)])))
         else:
-            f["gesture_energy"] = f["gesture_amplitude"] = 0.0
+            # No fabricated zero: absent hands are unmeasured, not motionless.
+            f["gesture_energy"] = f["gesture_amplitude"] = None
+
+        if wr_vis and len(self.wrist_hist) > 2:
+            ts = np.array([t for t, _ in self.wrist_hist])
+            pts = np.asarray([p for _, p in self.wrist_hist])
+            # Keep only frame-adjacent pairs, so a gap in visibility can never
+            # be read as movement.
+            gap = np.diff(ts)
+            contiguous = gap <= 2.0 / max(self.fps, 1.0)
+            if contiguous.any():
+                d = np.diff(pts, axis=0)[contiguous]
+                f["gesture_energy"] = float(np.abs(d).mean() / sh_w)
+                f["gesture_amplitude"] = float(pts.std(axis=0).mean() / sh_w)
+            else:
+                f["gesture_energy"] = f["gesture_amplitude"] = None
+        elif wr_vis:
+            f["gesture_energy"] = f["gesture_amplitude"] = None
 
         # Adaptors (self-touch). These rise with general arousal -- which
         # includes ordinary interview nerves. NOT a deception cue.

@@ -38,6 +38,20 @@ jobs:
       - name: Property tests (windowing, geometry, output contracts)
         run: python3 tests/test_properties.py
 
+      - name: Parameter ranges (catalogue as oracle)
+        run: python3 tests/test_parameter_ranges.py
+
+      - name: Audio prosody (Group D)
+        run: python3 tests/test_audio.py
+
+      - name: Structured interview engine (WP3)
+        run: python3 tests/test_interview.py
+
+      # ASR itself is covered by tests/test_text_asr.py, run on demand: it
+      # downloads a ~140 MB model. The content measures are fully covered here.
+      - name: Linguistic content (Group E)
+        run: python3 tests/test_text.py
+
       - name: End-to-end selftest (synthetic frames)
         run: python3 run_live.py --selftest
 

@@ -9,6 +9,10 @@ out/*.config.json
 out/consent.json
 out/consent*.json
 out/sessions/
+out/subjects/
+out/audit/
+out/withdrawals/
+out/interviews/
 *.parquet
 
 # Raw video and audio. The programme's recorded decision is to extract

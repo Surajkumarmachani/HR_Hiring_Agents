@@ -1,0 +1,174 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Interview session</title><link rel="stylesheet" href="/static/app.css"></head><body>
+<div class="wrap">
+  <h1 id="title">Interview session</h1>
+  <p class="sub" id="sub">Loading…</p>
+
+  <div id="gate" hidden></div>
+
+  <section id="consent" hidden>
+    <h2>Before we begin</h2>
+    <div class="notice-box" id="notice"></div>
+    <div class="card" style="margin-top:16px">
+      <p><strong>You can stop at any time</strong>, and ask us to delete everything
+         we hold about you. You do not need to give a reason.</p>
+      <label><input type="checkbox" id="agree"> I have read the notice and agree
+        to what it describes.</label>
+      <div class="row" style="margin-top:14px">
+        <button id="giveConsent" disabled>Agree and continue</button>
+        <span id="cErr" class="err"></span>
+      </div>
+    </div>
+  </section>
+
+  <section id="live" hidden>
+    <h2>You are connected</h2>
+    <div class="note"><p><strong>Your interviewer can see and hear you</strong>,
+      the same as any video call. Nothing is recorded or stored on your device.</p></div>
+    <video id="preview" autoplay muted playsinline></video>
+    <div class="row" style="margin-top:14px">
+      <button id="join">Join the interview</button>
+      <button id="leave" class="danger" disabled>Leave</button>
+      <span id="status" class="hint"></span>
+    </div>
+    <p class="hint" id="net"></p>
+  </section>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const SID = location.pathname.split("/")[2];
+const T = new URLSearchParams(location.search).get("t");
+const WS = location.protocol === "https:" ? "wss" : "ws";
+let state = null, stream = null, vws = null, aws = null;
+let frameTimer = null, audioRec = null, audioLoop = null;
+const cv = document.createElement("canvas");
+
+async function load() {
+  const r = await fetch(`/api/sessions/${SID}/candidate?t=${encodeURIComponent(T)}`);
+  if (!r.ok) { $("#sub").textContent = "This link is not valid."; return; }
+  state = await r.json();
+  $("#title").textContent = state.role || "Interview session";
+  $("#sub").textContent = `Session ${state.session_id}`;
+
+  if (!state.signals_enabled) {
+    $("#gate").hidden = false;
+    $("#gate").innerHTML = `<div class="note warn">
+      <p><strong>Camera measurement is switched off for this session.</strong></p>
+      <p>${state.signals_reason}</p>
+      <p>Your interview goes ahead exactly as normal — the interviewer asks the
+      same questions and rates your answers the same way.</p></div>`;
+    return;
+  }
+  $("#notice").textContent = state.notice_markdown || "(notice unavailable)";
+  $("#consent").hidden = state.consent_given;
+  $("#live").hidden = !state.consent_given;
+  if (state.consent_given) initMedia();
+}
+
+$("#agree").onchange = e => { $("#giveConsent").disabled = !e.target.checked; };
+
+$("#giveConsent").onclick = async () => {
+  const r = await fetch(`/api/sessions/${SID}/consent`, {method:"POST",
+    headers:{"content-type":"application/json"},
+    body: JSON.stringify({t: T, agreed: true, signals: state.signals})});
+  const d = await r.json();
+  if (!r.ok) { $("#cErr").textContent = d.detail || "could not record consent"; return; }
+  $("#consent").hidden = true; $("#live").hidden = false; initMedia();
+};
+
+async function initMedia() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}},
+      // AGC, echo cancellation and noise suppression all rewrite the audio.
+      // Left on, the voice measures would describe the browser's processing
+      // rather than the speaker.
+      audio: {echoCancellation:false, noiseSuppression:false, autoGainControl:false}
+    });
+    $("#preview").srcObject = stream;
+    $("#status").textContent = "Camera and microphone ready.";
+  } catch (e) {
+    $("#status").textContent = "Could not access camera or microphone: " + e.message;
+  }
+}
+
+$("#join").onclick = () => {
+  const v = $("#preview");
+  vws = new WebSocket(`${WS}://${location.host}/ws/candidate/${SID}?t=${encodeURIComponent(T)}`);
+  vws.onopen = () => {
+    frameTimer = setInterval(() => {
+      if (vws.readyState !== 1 || !v.videoWidth) return;
+      const w = 640, h = Math.round(v.videoHeight * (640 / v.videoWidth));
+      cv.width = w; cv.height = h;
+      cv.getContext("2d").drawImage(v, 0, 0, w, h);
+      cv.toBlob(b => b && vws.readyState === 1 &&
+        b.arrayBuffer().then(a => vws.send(a)), "image/jpeg", 0.7);
+    }, 1000 / 12);
+    $("#status").innerHTML = '<span class="rec-dot live"></span>Connected.';
+  };
+  vws.onmessage = e => { try { const d = JSON.parse(e.data);
+    if (d.error) $("#status").textContent = d.error + ": " + (d.reason || "");
+  } catch (_) {} };
+  vws.onclose = () => clearInterval(frameTimer);
+
+  startAudio();
+  $("#join").disabled = true; $("#leave").disabled = false;
+};
+
+// Each audio chunk is a COMPLETE webm file. MediaRecorder writes headers only
+// on the first blob of a recording, so later blobs of one session cannot be
+// decoded alone -- restarting per chunk costs a few ms at each boundary and
+// gives the server something it can always transcribe.
+function startAudio() {
+  aws = new WebSocket(`${WS}://${location.host}/ws/audio/${SID}?t=${encodeURIComponent(T)}`);
+  const track = stream.getAudioTracks();
+  if (!track.length) return;
+  const only = new MediaStream(track);
+  const mime = ["audio/webm;codecs=opus","audio/webm"]
+    .find(m => MediaRecorder.isTypeSupported(m));
+  const cycle = () => {
+    if (!aws || aws.readyState !== 1) return;
+    const parts = [];
+    audioRec = new MediaRecorder(only, {mimeType: mime});
+    audioRec.ondataavailable = e => e.data.size && parts.push(e.data);
+    audioRec.onstop = () => {
+      const blob = new Blob(parts, {type: mime});
+      if (blob.size > 2000 && aws.readyState === 1)
+        blob.arrayBuffer().then(a => aws.send(a));
+    };
+    audioRec.start();
+    setTimeout(() => audioRec.state !== "inactive" && audioRec.stop(), 6000);
+  };
+  aws.onopen = () => { cycle(); audioLoop = setInterval(cycle, 6200); };
+  aws.onclose = () => clearInterval(audioLoop);
+}
+
+$("#leave").onclick = () => {
+  clearInterval(frameTimer); clearInterval(audioLoop);
+  try { audioRec && audioRec.state !== "inactive" && audioRec.stop(); } catch (_) {}
+  vws && vws.close(); aws && aws.close();
+  stream.getTracks().forEach(t => t.stop());
+  $("#leave").disabled = true;
+  $("#status").textContent = "Disconnected. You can close this page.";
+};
+
+setInterval(async () => {
+  if (!state) return;
+  const t0 = performance.now();
+  try {
+    await fetch(`/api/sessions/${SID}/telemetry`, {method:"POST",
+      headers:{"content-type":"application/json"},
+      body: JSON.stringify({client_ms: Date.now(), role:"candidate", rtt_ms: null})});
+    const rtt = performance.now() - t0;
+    const r = await fetch(`/api/sessions/${SID}/telemetry`, {method:"POST",
+      headers:{"content-type":"application/json"},
+      body: JSON.stringify({client_ms: Date.now(), role:"candidate", rtt_ms: rtt})});
+    const d = await r.json();
+    if (d.jitter_ms != null) $("#net").textContent =
+      `connection: ${Math.round(rtt)} ms round trip, ${d.jitter_ms} ms jitter`;
+  } catch (e) {}
+}, 5000);
+
+load();
+</script></body></html>

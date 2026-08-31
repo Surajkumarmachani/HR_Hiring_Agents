@@ -1,0 +1,59 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Start an interview</title><link rel="stylesheet" href="/static/app.css"></head><body>
+<div class="wrap">
+  <h1>Start an interview</h1>
+  <p class="sub">Structured interview. Same questions, same order, every candidate.</p>
+
+  <div class="card">
+    <label for="cand">Candidate reference</label>
+    <input id="cand" type="text" placeholder="cand-7f3a" value="cand-7f3a">
+    <p class="hint">A reference, not a name. Names belong in your ATS, not here.</p>
+
+    <label for="panel">Panel (comma separated)</label>
+    <input id="panel" type="text" placeholder="alice, bob, carol" value="alice, bob">
+
+    <label for="guide">Guide</label>
+    <input id="guide" type="text" value="guides/software-engineer.json">
+
+    <label for="policy">Region policy for signal capture</label>
+    <select id="policy">
+      <option value="strict">strict — withhold capture when region is unknown</option>
+      <option value="permissive">permissive — capture unless region is restricted</option>
+    </select>
+
+    <div class="row" style="margin-top:18px">
+      <button id="go">Create session</button>
+      <span id="err" class="err"></span>
+    </div>
+  </div>
+
+  <div id="out" hidden></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+$("#go").onclick = async () => {
+  $("#err").textContent = "";
+  const body = {
+    candidate_ref: $("#cand").value.trim(),
+    panel: $("#panel").value.split(",").map(s => s.trim()).filter(Boolean),
+    guide: $("#guide").value.trim(),
+    region_policy: $("#policy").value,
+  };
+  const r = await fetch("/api/sessions", {method:"POST",
+    headers:{"content-type":"application/json"}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if (!r.ok) { $("#err").textContent = d.detail || "could not create session"; return; }
+  const link = (label, href) =>
+    `<div class="card"><h3>${label}</h3>
+       <p class="mono"><a href="${href}" target="_blank">${location.origin}${href}</a></p></div>`;
+  $("#out").innerHTML =
+    `<h2>Session ${d.session_id}</h2>
+     <p class="sub">Guide ${d.guide.id} v${d.guide.version} · digest <span class="mono">${d.guide.digest}</span></p>
+     <div class="note"><p>Each link is private to one person. Interviewers cannot see
+     each other's ratings until everyone has locked.</p></div>` +
+    link("Candidate", d.candidate_url) +
+    Object.entries(d.interviewer_urls).map(([w,u]) => link("Interviewer — " + w, u)).join("");
+  $("#out").hidden = false;
+};
+</script></body></html>

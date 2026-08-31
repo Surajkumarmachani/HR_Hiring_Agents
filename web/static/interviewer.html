@@ -1,0 +1,331 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Conduct interview</title><link rel="stylesheet" href="/static/app.css"></head><body>
+<div class="wrap wide">
+  <h1 id="title">Interview</h1>
+  <p class="sub" id="sub">Loading…</p>
+  <div id="lockstate"></div>
+
+  <section id="live">
+    <h2>Candidate</h2>
+    <div class="live-grid">
+      <div>
+        <img id="feed" alt="Live view of the candidate" hidden>
+        <div id="noFeed" class="note"><p>Waiting for the candidate to join.</p></div>
+        <div class="card" style="margin-top:12px">
+          <h3>Transcript <span class="tag" id="tstat">waiting</span></h3>
+          <div id="transcript" class="transcript"><p class="hint">
+            Speech appears here a few seconds behind, transcribed on this
+            machine.</p></div>
+        </div>
+      </div>
+      <div class="card" id="readout">
+        <h3>Live read <span class="tag warn">provisional</span></h3>
+        <p class="hint" id="advisory">Descriptive measurements. Not a score, and
+          not an input to one.</p>
+        <div id="metrics" class="metrics"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="questions"><h2>Questions</h2>
+    <p class="sub">Ask all of them, in this order, for every candidate.</p>
+    <div id="qlist"></div></section>
+
+  <section id="rating"><h2>Ratings</h2>
+    <div class="note"><p>Score against the anchors. Quote what the candidate
+      actually said — a score without evidence cannot be explained to them.</p></div>
+    <div id="clist"></div>
+    <div class="card">
+      <h3>Lock your ratings</h3>
+      <p>Locking makes them final. Only once <em>every</em> interviewer has locked
+         does anyone see anyone else's scores. That independence is what keeps the
+         panel from converging on the first opinion voiced.</p>
+      <div class="row"><button id="lock">Lock my ratings</button>
+        <span id="lockErr" class="err"></span></div>
+    </div>
+  </section>
+
+  <section id="panel" hidden><h2>Panel</h2><div id="summary"></div></section>
+</div>
+<style>
+.live-grid { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(280px,1fr);
+  gap: 16px; align-items: start; }
+@media (max-width: 780px) { .live-grid { grid-template-columns: 1fr; } }
+#feed { width: 100%; border-radius: 6px; background: #000; display: block; }
+.metrics { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px;
+  font-size: 14px; margin-top: 10px; }
+.metrics .k { color: var(--ink-2); }
+.metrics .v { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.metrics .v.bad { color: var(--warn); }
+.metrics .hr { grid-column: 1/-1; border-top: 1px solid var(--rule); margin: 8px 0 2px; }
+.metrics .sec { grid-column: 1/-1; font-family: ui-monospace, monospace;
+  font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--accent); margin-top: 10px; }
+.transcript { max-height: 260px; overflow-y: auto; font-size: 14px; }
+.transcript p { margin: 0 0 8px; }
+.transcript .ts { font-family: ui-monospace, monospace; font-size: 11px;
+  color: var(--ink-3); margin-right: 6px; }
+.transcript .low { color: var(--warn); }
+</style>
+<script>
+const $ = s => document.querySelector(s);
+const parts = location.pathname.split("/");
+const SID = parts[2], WHO = parts[3];
+const T = new URLSearchParams(location.search).get("t");
+let S = null;
+
+const esc = s => String(s).replace(/[&<>"]/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+async function load() {
+  const r = await fetch(`/api/sessions/${SID}/interview?who=${WHO}&t=${encodeURIComponent(T)}`);
+  if (!r.ok) { $("#sub").textContent = "This link is not valid."; return; }
+  S = await r.json();
+  $("#title").textContent = S.role;
+  $("#sub").textContent = `Candidate ${S.candidate_ref} · you are ${WHO} · guide ${S.guide.id} v${S.guide.version}`;
+
+  $("#qlist").innerHTML = S.questions.map((q,i) => `
+    <div class="card"><h3>${i+1}. ${esc(q.text)}</h3>
+      <p class="hint">rates: ${q.competencies.join(", ")}</p>
+      ${q.probes.map(p => `<p class="hint">probe: ${esc(p)}</p>`).join("")}
+    </div>`).join("");
+
+  $("#clist").innerHTML = S.competencies.map(c => {
+    const mine = S.my_ratings[c.id] || {};
+    return `<div class="card" data-c="${c.id}">
+      <h3>${esc(c.name)} <span class="tag">weight ${c.weight}</span></h3>
+      <p>${esc(c.definition)}</p>
+      <ul class="anchors">${c.anchors.map(a => `<li>
+        <span class="n">${a.score}</span>
+        <span><span class="lab">${esc(a.label)}</span><br>
+        <span class="desc">${esc(a.description)}</span></span></li>`).join("")}</ul>
+      <div class="scale">
+        ${c.scale.map(n => `<button data-score="${n}"
+           aria-pressed="${mine.score === n}">${n}</button>`).join("")}
+        <button class="na" data-score="not_assessed"
+          aria-pressed="${mine.score === "not_assessed"}">not assessed</button>
+      </div>
+      <label>Evidence — quote what they said or did</label>
+      <textarea data-ev>${esc(mine.evidence || "")}</textarea>
+      <div class="row" style="margin-top:10px">
+        <button class="ghost" data-save>Save</button>
+        <span class="hint" data-msg></span></div>
+    </div>`;
+  }).join("");
+
+  document.querySelectorAll("[data-c]").forEach(card => {
+    card.querySelectorAll(".scale button").forEach(b => b.onclick = () => {
+      card.querySelectorAll(".scale button")
+          .forEach(x => x.setAttribute("aria-pressed", x === b));
+    });
+    card.querySelector("[data-save]").onclick = () => save(card);
+  });
+
+  renderLock();
+  if (S.all_locked) showPanel();
+}
+
+function renderLock() {
+  const el = $("#lockstate");
+  if (S.locked) {
+    el.innerHTML = S.all_locked
+      ? `<div class="note ok"><p>You locked at ${S.locked_at.slice(0,19)}.
+          Every interviewer has locked — the panel view is below.</p></div>`
+      : `<div class="note"><p>You locked at ${S.locked_at.slice(0,19)}.
+          Waiting for: <strong>${S.pending.join(", ")}</strong>.
+          Their ratings stay sealed until then.</p></div>`;
+    document.querySelectorAll("#rating button, #rating textarea")
+      .forEach(b => b.disabled = true);
+  } else {
+    el.innerHTML = `<div class="note warn"><p>Your ratings are not locked yet.
+      You cannot see anyone else's until you and
+      ${S.pending.filter(p => p !== WHO).length ? "the rest of the panel" : "the panel"} have locked.</p></div>`;
+  }
+}
+
+async function save(card) {
+  const cid = card.dataset.c;
+  const pressed = card.querySelector('.scale button[aria-pressed="true"]');
+  const msg = card.querySelector("[data-msg]");
+  if (!pressed) { msg.textContent = "pick a score first"; return; }
+  const raw = pressed.dataset.score;
+  const r = await fetch(`/api/sessions/${SID}/rate`, {method:"POST",
+    headers:{"content-type":"application/json"},
+    body: JSON.stringify({who: WHO, t: T, competency_id: cid,
+      score: raw === "not_assessed" ? "not_assessed" : Number(raw),
+      evidence: card.querySelector("[data-ev]").value})});
+  const d = await r.json();
+  msg.textContent = r.ok ? "saved" : (d.detail || "not saved");
+  msg.className = r.ok ? "hint" : "err";
+}
+
+$("#lock").onclick = async () => {
+  const r = await fetch(`/api/sessions/${SID}/lock`, {method:"POST",
+    headers:{"content-type":"application/json"},
+    body: JSON.stringify({who: WHO, t: T})});
+  const d = await r.json();
+  if (!r.ok) { $("#lockErr").textContent = d.detail; return; }
+  await load();
+};
+
+async function showPanel() {
+  const r = await fetch(`/api/sessions/${SID}/summary?who=${WHO}&t=${encodeURIComponent(T)}`);
+  if (!r.ok) return;
+  const d = await r.json();
+  const panel = d.panel;
+  $("#summary").innerHTML = `
+    <div class="table-wrap"><table>
+      <thead><tr><th>Competency</th>
+        ${panel.map(p => `<th class="num">${esc(p)}</th>`).join("")}
+        <th class="num">mean</th><th></th></tr></thead>
+      <tbody>${d.competencies.map(c => `<tr>
+        <td>${esc(c.competency)}</td>
+        ${panel.map(p => `<td class="num">${c.scores[p] === "not_assessed" ? "n/a"
+            : (c.scores[p] ?? "—")}</td>`).join("")}
+        <td class="num">${c.mean ?? "—"}</td>
+        <td>${c.disagreement ? '<span class="tag crit">discuss</span>' : ""}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+    <p class="sub" style="margin-top:14px">Weighted mean
+      <strong>${d.weighted_mean ?? "—"}</strong>. ${esc(d.note)}</p>
+    ${d.disagreements.length ? `<div class="note crit"><p><strong>Discuss first:</strong>
+      ${d.disagreements.join(", ")}. A spread of 2 or more means the panel saw
+      different interviews — resolve it on evidence, not by averaging.</p></div>` : ""}
+    ${d.network?.jitter_ms != null ? `<p class="hint">network: ${d.network.jitter_ms} ms
+      jitter, ${d.network.mean_rtt_ms} ms mean round trip</p>` : ""}
+    <div class="card"><h3>Record the decision</h3>
+      <label>Outcome</label>
+      <select id="outcome"><option>hire</option><option>no_hire</option>
+        <option>hold</option><option>next_stage</option></select>
+      <label>Rationale — reference the evidence</label>
+      <textarea id="rationale" placeholder="What the candidate showed, and where."></textarea>
+      <div class="row" style="margin-top:10px"><button id="decide">Record decision</button>
+        <span id="dErr" class="err"></span></div></div>`;
+  $("#panel").hidden = false;
+  $("#decide").onclick = async () => {
+    const r = await fetch(`/api/sessions/${SID}/decide`, {method:"POST",
+      headers:{"content-type":"application/json"},
+      body: JSON.stringify({who: WHO, t: T, outcome: $("#outcome").value,
+        rationale: $("#rationale").value})});
+    const d = await r.json();
+    $("#dErr").textContent = r.ok ? "" : d.detail;
+    if (r.ok) $("#dErr").outerHTML = '<span class="tag ok">recorded</span>';
+  };
+}
+// ---- live feed --------------------------------------------------------
+// Frames arrive as binary, measurements as JSON, on one socket.
+function connectLive() {
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}` +
+    `/ws/interviewer/${SID}/${WHO}?t=${encodeURIComponent(T)}`);
+  ws.binaryType = "blob";
+  let url = null;
+  ws.onmessage = e => {
+    if (typeof e.data !== "string") {
+      $("#noFeed").hidden = true; $("#feed").hidden = false;
+      const next = URL.createObjectURL(e.data);
+      $("#feed").src = next;
+      if (url) URL.revokeObjectURL(url);
+      url = next;
+      return;
+    }
+    try { renderMetrics(JSON.parse(e.data)); } catch (_) {}
+  };
+  ws.onclose = () => setTimeout(connectLive, 3000);
+  setInterval(() => ws.readyState === 1 && ws.send("ping"), 20000);
+}
+
+function renderMetrics(d) {
+  if (d.error) return;
+  if (d.type === "transcript") return renderTranscript(d);
+  const rows = [];
+  const sec = t => rows.push(`<div class="sec">${t}</div>`);
+  const push = (k, v, bad) => rows.push(
+    `<div class="k">${k}</div><div class="v${bad ? " bad" : ""}">${v ?? "—"}</div>`);
+
+  sec("pulse (rPPG)");
+  if (d.pulse && d.pulse.bpm != null) {
+    push("bpm", d.pulse.bpm, d.pulse.sqi < 0.55);
+    push("signal quality", d.pulse.sqi, d.pulse.sqi < 0.55);
+    push("iqr", d.pulse.iqr + " bpm");
+    push("coverage", Math.round(d.pulse.coverage * 100) + "%");
+    push("instant", d.pulse.instant);
+    // ROI disagreement is the honest check on a pulse figure: SQI can look
+    // healthy while the three regions track different frequencies entirely.
+    push("roi spread", d.pulse.roi_spread != null ? d.pulse.roi_spread + " bpm" : "—",
+         d.pulse.roi_spread > 8);
+  } else {
+    push("status", (d.pulse && d.pulse.status) || "—", true);
+  }
+
+  sec("face");
+  push("visible", d.face_visibility, d.face_visibility < 0.6);
+  push("active AUs", d.face.active_aus);
+  push("AU sum", d.face.au_sum);
+  push("yaw/pitch/roll", d.face.head.join(" / "));
+  push("head motion", d.face.head_motion);
+  push("smile duchenne", d.face.smile_duchenne);
+  push("smile social", d.face.smile_social);
+
+  sec("gaze");
+  push("x / y", `${d.gaze.x ?? "—"} / ${d.gaze.y ?? "—"}`);
+  push("magnitude", d.gaze.magnitude);
+  push("on camera", d.gaze.on_camera);
+
+  sec("blink");
+  push("count", d.blink.count);
+  push("mean duration", d.blink.mean_dur_ms != null ? d.blink.mean_dur_ms + " ms" : "—");
+  push("interblink", d.blink.interblink_s != null ? d.blink.interblink_s + " s" : "—");
+  push("variability", d.blink.cv);
+
+  sec("body");
+  if (d.body) {
+    push("shoulder tilt", d.body.shoulder_tilt != null ? d.body.shoulder_tilt + "°" : "—");
+    push("lean", d.body.lean);
+    push("sway", d.body.sway);
+    push("gesture energy", d.body.gesture_energy);
+    push("self-touch", d.body.self_touch);
+    push("hands visible", d.body.hands_visible);
+  } else push("status", "not available", true);
+
+  sec("capture quality");
+  push("illumination", d.quality.illumination);
+  push("light stability", d.quality.stability, d.quality.stability > 12);
+  push("face size", d.quality.face_px != null ? d.quality.face_px + " px" : "—",
+       d.quality.face_px != null && d.quality.face_px < 120);
+  push("frame drops", d.quality.drops != null
+       ? (d.quality.drops * 100).toFixed(1) + "%" : "—", d.quality.drops > 0.10);
+  push("stream rate", d.effective_fps + " fps", d.effective_fps < 8);
+
+  if (d.top_aus && d.top_aus.length) {
+    sec("strongest action units");
+    d.top_aus.forEach(a => push(`${a.code} ${a.name}${a.asym ? " asym" : ""}`, a.value));
+  }
+
+  $("#metrics").innerHTML = rows.join("");
+  if (d.advisory) $("#advisory").textContent = d.advisory;
+}
+
+function renderTranscript(d) {
+  const box = $("#transcript");
+  if (box.querySelector(".hint")) box.innerHTML = "";
+  const s = d.segment;
+  if (!s || !s.text) return;
+  const low = s.confidence != null && s.confidence < 0.85;
+  const p = document.createElement("p");
+  p.innerHTML = `<span class="ts">${Math.floor(s.t/60)}:${String(Math.floor(s.t%60)).padStart(2,"0")}</span>` +
+    `<span class="${low ? "low" : ""}">${esc(s.text)}</span>`;
+  box.appendChild(p);
+  box.scrollTop = box.scrollHeight;
+  // Confidence is shown because Group E measures the words that were
+  // transcribed: a bad transcript degrades them in ways that look like
+  // findings about the candidate.
+  $("#tstat").textContent = low
+    ? `low confidence ${s.confidence.toFixed(2)}`
+    : `ok ${s.confidence != null ? s.confidence.toFixed(2) : ""}`;
+  $("#tstat").className = "tag " + (low ? "warn" : "ok");
+}
+
+load();
+connectLive();
+</script></body></html>

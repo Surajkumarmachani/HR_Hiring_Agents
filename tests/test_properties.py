@@ -236,6 +236,54 @@ except KeyError:
     check("a mistyped setting is rejected", True, "raises KeyError")
 
 
+# ===================================================================== 6
+print("\n6. Body: gesture metrics must not outlive the hands that produced them")
+
+from collections import deque as _deque
+
+
+def _gesture(hist, wr_vis, sh_w, fps):
+    """The shipped logic, isolated from MediaPipe so it can be exercised."""
+    if not wr_vis:
+        return None, None
+    if len(hist) > 2:
+        ts = np.array([t for t, _ in hist])
+        pts = np.asarray([p for _, p in hist])
+        contiguous = np.diff(ts) <= 2.0 / fps
+        if contiguous.any():
+            d = np.diff(pts, axis=0)[contiguous]
+            return (float(np.abs(d).mean() / sh_w),
+                    float(pts.std(axis=0).mean() / sh_w))
+    return None, None
+
+
+fps, sh_w = 30.0, 0.3
+hist = _deque(maxlen=int(fps * 5))
+for i in range(90):
+    hist.append((i / fps, np.array([0.3 + 0.01 * np.sin(i / 3), 0.7, 0.6, 0.7])))
+
+live, _ = _gesture(hist, True, sh_w, fps)
+check("reports a value while the hands are visible", live is not None,
+      f"energy={live:.4f}")
+
+# Observed live: hands_visible_ratio 0.00 alongside gesture_energy 0.049,
+# published from a buffer that stopped updating when the hands left frame.
+gone, gone_amp = _gesture(hist, False, sh_w, fps)
+check("reports None once the hands leave frame",
+      gone is None and gone_amp is None,
+      "absent hands are unmeasured, not motionless")
+
+# A hand leaving at one edge and returning at the other must not read as one
+# enormous gesture.
+hist.append((8.0 + 90 / fps, np.array([0.9, 0.7, 0.95, 0.7])))
+hist.append((8.0 + 91 / fps, np.array([0.9, 0.7, 0.95, 0.7])))
+after, _ = _gesture(hist, True, sh_w, fps)
+naive = float(np.abs(np.diff(np.asarray([p for _, p in hist]), axis=0)).mean() / sh_w)
+check("a visibility gap is not counted as movement",
+      after is not None and after < naive / 2.0,
+      f"contiguous={after:.4f} vs naive-across-gap={naive:.4f}")
+
+
 # ===================================================================== end
 print()
 if failures:

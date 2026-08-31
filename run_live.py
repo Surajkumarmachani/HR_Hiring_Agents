@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 import cv2
 import numpy as np
 
+import consent as consent_mod
 from config import CONFIG, Config
 from fusion import FeatureFrame, SessionState
 from signals.au_map import AU_DEFINITIONS
@@ -32,41 +33,21 @@ from signals.rppg import POSEstimator, skin_mask_rgb_mean
 
 
 # ----------------------------------------------------------------- consent
-def load_consent(path):
-    if not path or not os.path.exists(path):
-        raise SystemExit(
-            "\nREFUSING TO START: no consent record.\n"
-            "Create one with --make-consent, or wire this to your real consent\n"
-            "capture flow. A pipeline that records faces and pulse without a\n"
-            "verifiable consent artefact is not deployable in any jurisdiction\n"
-            "you would want to operate in.\n")
-    with open(path) as fh:
-        c = json.load(fh)
-    for k in ("subject_id", "purpose", "granted_at", "retention_days",
-              "signals_consented", "withdrawal_contact"):
-        if k not in c:
-            raise SystemExit(f"consent record missing required field: {k}")
-    print(f"[consent] subject={c['subject_id']} purpose={c['purpose']} "
-          f"retention={c['retention_days']}d signals={c['signals_consented']}")
-    return c
+# The mechanics now live in consent.py (WP7a): validation, expiry, per-signal
+# scope and a withdrawal path that actually deletes. run_live's job is to
+# refuse to start unless the record permits exactly what this run captures.
 
 
-def make_consent(path, subject_id):
-    rec = {
-        "subject_id": subject_id,
-        "purpose": "interview delivery feedback (non-decisional)",
-        "granted_at": datetime.now(timezone.utc).isoformat(),
-        "retention_days": 30,
-        "signals_consented": ["video_facial_features", "upper_body_pose",
-                              "pulse_rate_rppg", "audio_prosody"],
-        "decisional_use": False,
-        "withdrawal_contact": "privacy@example.com",
-        "notice_version": "v1",
-    }
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as fh:
-        json.dump(rec, fh, indent=2)
-    print(f"[consent] template written to {path} — replace with your real flow")
+def signals_this_run(args):
+    """What this invocation will actually record, named as the notice names it.
+
+    Consent is per-signal. A record covering face but not pose must stop a run
+    that captures pose -- otherwise 'signals_consented' is decoration.
+    """
+    sig = ["video_facial_features", "pulse_rate_rppg"]
+    if not args.no_body:
+        sig.append("upper_body_pose")
+    return sig
 
 
 # -------------------------------------------------------------- self-test
@@ -87,7 +68,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", default=None, help="video file (default: webcam 0)")
     ap.add_argument("--consent", default="out/consent.json")
-    ap.add_argument("--make-consent", metavar="SUBJECT_ID")
+    ap.add_argument("--subject", default=None,
+                    help="subject id; resolves out/subjects/<id>/consent.json")
+    ap.add_argument("--dev", action="store_true",
+                    help="record yourself locally: creates a self-consent "
+                         "record for the current user if none exists")
     ap.add_argument("--out", default="out/session.parquet")
     ap.add_argument("--headless", action="store_true")
     ap.add_argument("--selftest", action="store_true")
@@ -108,16 +93,59 @@ def main():
         print(f"\ndigest: {cfg.digest()}")
         return
 
-    if args.make_consent:
-        return make_consent(args.consent, args.make_consent)
-
     if args.preflight:
         return preflight()
 
     if args.selftest:
         return selftest()
 
-    load_consent(args.consent)
+    need = signals_this_run(args)
+
+    if args.dev:
+        # Self-recording. You are the data subject, so consent is yours to
+        # give -- but it is still RECORDED, with a retention limit and a
+        # withdrawal path, because a pipeline that can run without a consent
+        # artefact will eventually be run without one.
+        import getpass
+        args.subject = args.subject or f"dev-{getpass.getuser()}"
+        cpath = os.path.join("out", "subjects", args.subject, "consent.json")
+        try:
+            if not os.path.exists(cpath):
+                # Grant the full self-recording scope, not just what THIS
+                # invocation needs -- otherwise a first run with --no-body
+                # writes a record that a later run without it cannot use.
+                consent_mod.create(
+                    args.subject, "out",
+                    purpose="local development and self-testing by the operator",
+                    context="self",
+                    signals=["video_facial_features", "upper_body_pose",
+                             "pulse_rate_rppg"],
+                    retention_days=7,
+                    data_fiduciary=f"self ({getpass.getuser()})",
+                    withdrawal_contact=f"self — delete out/subjects/{args.subject}/",
+                    grievance_contact="self")
+                print(f"[consent] created self-recording consent for "
+                      f"{args.subject} (7-day retention)")
+            else:
+                # An existing self record may predate a signal this run needs.
+                # Widening your own consent is something you can do for
+                # yourself; it is logged as an amendment either way.
+                _, added = consent_mod.amend_signals(args.subject, "out",
+                                                     add=need)
+                if added:
+                    print(f"[consent] amended own consent to add: "
+                          f"{', '.join(added)}")
+        except consent_mod.ConsentError as e:
+            raise SystemExit(f"\n{e}\n")
+
+    try:
+        rec = consent_mod.load(args.subject or args.consent,
+                               required_signals=need)
+    except consent_mod.ConsentError as e:
+        raise SystemExit(str(e))
+    print(f"[consent] subject={rec['subject_id']} context={rec['context']} "
+          f"expires={rec['expires_at'][:10]}")
+    print(f"[consent] this run records: {', '.join(need)}")
 
     from signals.face import FaceAnalyzer
     cap = cv2.VideoCapture(args.video if args.video else 0)
@@ -128,6 +156,8 @@ def main():
         fps = 30.0
 
     face = FaceAnalyzer(fps=fps, cfg=cfg)
+    from signals.quality import SessionQuality
+    qual = SessionQuality(fps=fps, cfg=cfg)
 
     # Body tracking is the optional stage. If its model cannot be fetched or
     # the API shifts under us, the session continues with face + rPPG rather
@@ -183,6 +213,17 @@ def main():
                       f"frames will be skipped, session continues")
             fdict, rois = None, None
         ff.quality["face_detected"] = 1.0 if fdict else 0.0
+        # Group F capture quality. Measured on every frame including those
+        # with no face, because "how often did we lose the face, and how dark
+        # and unstable was it when we had it" is exactly the diagnostic.
+        try:
+            ff.quality.update(qual.update(
+                frame, getattr(face, "last_landmarks_px", None), t))
+        except Exception as e:
+            errors["quality"] = errors.get("quality", 0) + 1
+            if errors["quality"] == 1:
+                print(f"[run] quality stage error ({type(e).__name__}: {e}); "
+                      f"capture-quality parameters will be absent")
 
         if fdict:
             ff.face = fdict
@@ -260,6 +301,7 @@ def main():
                 # silently destroy a recording.
                 state.frames.clear()
                 face.reset()
+                qual.reset()
                 if body:
                     body.reset()
                 for est in rppg.values():
@@ -441,6 +483,25 @@ def draw_overlay(frame, idx, ff, t, detail=True):
         pair("pose visibility", _num(body.get("pose_visibility")))
     else:
         line("not available this session", (0, 140, 255))
+
+    # ---- capture quality (Group F) --------------------------------------
+    header("CAPTURE QUALITY")
+    q = ff.quality
+    c = CONFIG.quality
+    illum, sd = q.get("illumination_mean"), q.get("illumination_stability")
+    res, drop = q.get("resolution"), q.get("frame_drop_fraction")
+    pair("illumination", _num(illum, 0))
+    # Advisory colouring only -- these are the catalogue's rules of thumb, not
+    # calibrated gates. WP8b sets the real lines.
+    pair("stability (sd)", _num(sd, 1),
+         (0, 200, 240) if sd is not None and sd > c.advisory_illumination_sd
+         else (210, 210, 210))
+    pair("face size", f"{_num(res, 0)} px",
+         (0, 200, 240) if res is not None and res < c.advisory_min_face_px
+         else (210, 210, 210))
+    pair("frame drops", "-" if drop is None else f"{drop * 100:.1f}%",
+         (0, 200, 240) if drop is not None
+         and drop > c.advisory_frame_drop_fraction else (210, 210, 210))
 
     # ---- strongest AUs right now ----------------------------------------
     header("TOP ACTION UNITS")

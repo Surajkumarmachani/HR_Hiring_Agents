@@ -8,12 +8,19 @@ numpy>=1.24
 scipy>=1.11               # POS bandpass + Welch PSD
 pandas>=2.0
 pyarrow>=14.0             # parquet feature logs
+faster-whisper>=1.0       # WP4: local ASR. Runs on-device; hosted ASR would put
+                          # candidate speech in a third party's logs, which no
+                          # consent notice here covers. Brings onnxruntime and
+                          # tokenizers, which WP4's embeddings reuse instead of torch.
+praat-parselmouth>=0.4    # WP2: jitter, shimmer, HNR, F0 (Praat algorithms)
+                          # Not optional: these measures are DEFINED by Praat's
+                          # algorithms, so a reimplementation would not be
+                          # comparable to the phonetics literature.
 
 # --- Optional, add as you reach the relevant phase -----------------------
 # py-feat>=0.6            # FACS-trained AU intensities (offline, ~2-8 fps)
 # openface-test           # OpenFace 3.0: 8 emotions, gaze, AUs (GPU)
 # librosa>=0.10           # prosody: F0, energy, spectral features
-# praat-parselmouth>=0.4  # jitter, shimmer, HNR (Praat algorithms)
 # webrtcvad>=2.0          # voice activity detection for turn-taking
 # faster-whisper>=1.0     # streaming ASR for content/linguistic analysis
 # fairlearn>=0.10         # subgroup performance auditing (Phase 4 - required)
