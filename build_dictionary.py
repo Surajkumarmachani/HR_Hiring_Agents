@@ -70,11 +70,56 @@ GAZE_NOTES = {
 rows = []
 
 
+# The CORE SET: parameters that carry the product today, marked rather than
+# selected. Everything else stays measured and catalogued -- WP8b's job is to
+# find which parameters actually predict anything, and deleting them now would
+# prejudge that answer with an opinion.
+#
+# Grouped by PURPOSE, because that is what determines whether a parameter may
+# be used at all. Assessment parameters can inform a hiring decision; delivery
+# parameters go back to the candidate; QA parameters are about the interviewer;
+# quality parameters gate everything else. A parameter's purpose is not
+# interchangeable with another's.
+CORE = {
+    # --- assessment: may inform the decision ---------------------------
+    "text.star_completeness", "text.specificity_score",
+    "text.quantification_rate", "text.answer_relevance",
+    "text.competency_coverage",
+    # --- interviewer QA and bias telemetry ------------------------------
+    "audio.talk_time_ratio", "audio.interruption_count",
+    "audio.turn_length_mean", "audio.response_latency",
+    # --- delivery feedback, for the candidate ---------------------------
+    "audio.speech_rate", "audio.articulation_rate", "audio.pause_count",
+    "audio.pause_mean_dur", "audio.f0_range", "audio.f0_slope",
+    "audio.rms_energy", "audio.energy_variability",
+    # --- capture quality: gates every measure above ---------------------
+    "quality.face_visibility_ratio", "quality.illumination_mean",
+    "quality.illumination_stability", "quality.resolution",
+    "quality.frame_drop_fraction", "quality.audio_snr",
+    "quality.network_jitter", "physio.sqi", "physio.roi_spread_bpm",
+    # --- descriptive context, never scored ------------------------------
+    "physio.bpm", "face.head_motion_energy", "face.blink_count",
+    "body.gesture_energy",
+}
+
+# Why the obvious candidates are NOT core, recorded so the decision is not
+# quietly reversed later:
+#   - the 100 facial AUs: no individual AU is interpretable in an interview,
+#     and 21 sit at Weak inference tier already
+#   - jitter/shimmer/hnr: real measures, but they need >15 dB SNR and describe
+#     vocal pathology rather than interview performance
+#   - pronoun_i_we_ratio, hedging_density: culturally loaded. "We" is not
+#     weaker ownership; hedging rises with politeness register and with
+#     speaking a second language
+#   - gaze_on_camera_ratio: screen layout decides it, not attention
+
+
 def add(pid, group, sub, name, kind, unit, rate, tier, measures, confound, status):
     rows.append(dict(
         parameter_id=pid, group=group, subgroup=sub, parameter=name, type=kind,
         unit_range=unit, rate_hz=rate, validity_tier=tier,
-        what_it_measures=measures, principal_confound=confound, status=status))
+        what_it_measures=measures, principal_confound=confound, status=status,
+        core="Core" if pid in CORE else ""))
 
 
 # ---------------------------------------------------------------- Group A
@@ -377,5 +422,11 @@ print(f"{len(df)} parameters\n")
 print(df.groupby("group").size().to_string())
 print("\nBy validity tier:")
 print(df.groupby("validity_tier").size().to_string())
+print(f"\nCore set: {int((df['core'] == 'Core').sum())} of {len(df)}")
+print(df[df["core"] == "Core"].groupby("group").size().to_string())
+missing = sorted(CORE - set(df["parameter_id"]))
+if missing:
+    print(f"\nWARNING: core ids not in the catalogue: {missing}")
+
 print("\nBy build status:")
 print(df.groupby("status").size().to_string())

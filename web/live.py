@@ -71,6 +71,7 @@ class LiveAnalyzer:
         self.t0 = time.time()
         self.frames = 0
         self.last_emit = -1.0
+        self.last_physio = {}
         self.errors = defaultdict(int)
 
         from signals.face import FaceAnalyzer
@@ -123,19 +124,28 @@ class LiveAnalyzer:
             for name, est in self.rppg.items():
                 m = skin_mask_rgb_mean(frame, rois[name], cfg=self.cfg)
                 if m is not None:
-                    est.update(m)
-            bpms, sqis = [], []
-            for est in self.rppg.values():
-                b, q, _ = est.estimate()
-                if b is not None:
-                    bpms.append(b)
-                    sqis.append(q)
-            if bpms:
-                w = np.asarray(sqis)
-                ff.physio["bpm"] = float(np.average(bpms, weights=w))
-                ff.physio["sqi"] = float(np.mean(sqis))
-                ff.physio["roi_spread_bpm"] = (float(np.ptp(bpms))
-                                               if len(bpms) > 1 else 0.0)
+                    est.update(m, t)
+
+            # Estimate at the emit rate, not the frame rate. A Welch PSD costs
+            # ~6 ms and the window behind it is 10 s long, so recomputing it
+            # every frame spends most of a core to produce the same number.
+            if t - self.last_emit >= 1.0:
+                bpms, sqis = [], []
+                for est in self.rppg.values():
+                    b, q, _ = est.estimate()
+                    if b is not None:
+                        bpms.append(b)
+                        sqis.append(q)
+                if bpms:
+                    w = np.asarray(sqis)
+                    self.last_physio = {
+                        "bpm": float(np.average(bpms, weights=w)),
+                        "sqi": float(np.mean(sqis)),
+                        "roi_spread_bpm": (float(np.ptp(bpms))
+                                           if len(bpms) > 1 else 0.0)}
+                else:
+                    self.last_physio = {}
+            ff.physio.update(self.last_physio)
             if self.body:
                 try:
                     bd = self.body.process(frame, ts_ms)
@@ -208,6 +218,8 @@ class LiveAnalyzer:
                 "stability": _r(q.get("illumination_stability"), 1),
                 "face_px": _r(q.get("resolution"), 0),
                 "drops": _r(q.get("frame_drop_fraction"), 3),
+                "effective_fps": _r(q.get("effective_fps"), 1),
+                "jitter_ms": _r(q.get("sampling_jitter_ms"), 1),
             },
             "top_aus": [{"code": c.split("_")[0],
                          "name": AU_NAMES.get(c.split("_")[0], c),

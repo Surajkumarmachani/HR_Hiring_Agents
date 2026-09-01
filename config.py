@@ -74,6 +74,93 @@ class RPPGConfig:
     should revisit for the eyewear stratum."""
 
     min_roi_pixels: int = 200
+    """Below this an ROI mean is too noisy to use; returns None instead.
+
+    Note the direction: MORE skin pixels is better, not fewer. The pulse is a
+    0.1-1% colour change, far under sensor noise on any single pixel, and is
+    only recoverable because averaging cuts noise with the square root of the
+    pixel count. The goal is the largest area that is ALL skin -- not a small
+    area."""
+
+    # --- adaptive patch selection (signals/roi.py) -----------------------
+    patch_warmup_sec: float = 12.0
+    """Evidence has to accumulate before a patch can be judged. Slightly
+    longer than the POS window so every patch has produced a full estimate."""
+
+    patch_min_coverage: float = 0.6
+    """Fraction of frames in which a patch yielded enough pixels. A patch
+    under hair or off the frame edge fails here."""
+
+    patch_min_sqi: float = 0.4
+    """Periodicity a patch must show on its own to be trusted. Beard has no
+    blood volume, so it fails this regardless of its colour -- which is the
+    point: the test never looks at absolute colour and so cannot be calibrated
+    to one range of skin tones."""
+
+    patch_max_brightness_cv: float = 0.12
+    """Floor for the brightness test. Applied as a floor, not a ceiling: see
+    patch_brightness_outlier_ratio."""
+
+    patch_brightness_outlier_ratio: float = 2.2
+    """A patch is rejected for brightness only when it swings this much more
+    than the MEDIAN patch on the same face. An absolute threshold rejects
+    every patch at once when the room light is unsteady -- which says nothing
+    about any region. A reflection is a local outlier, not a global one."""
+
+    patch_min_harmonic_ratio: float = 0.05
+    """NOT CURRENTLY ENFORCED -- see signals/roi.py. Second-harmonic power as a fraction of fundamental power, below which a
+    patch is not treated as cardiac. A heartbeat has a sharp upstroke and so
+    carries a harmonic; flicker, auto-exposure hunting and head-bob are
+    near-sinusoidal and carry none. Measured on synthetic signals: a
+    cardiac-shaped pulse scored 0.367, a pure sinusoid 0.001, while SQI could
+    not separate them at all (0.97 vs 0.99). Deliberately a low floor -- it
+    rejects the obviously non-cardiac without demanding a textbook waveform
+    from a noisy webcam.
+
+    Left unenforced because applying it rejected every real recording to hand,
+    two at a ratio of 0.000. Either those peaks were never cardiac, or the
+    harmonic is below the noise floor at webcam SNR. Both are plausible, they
+    imply opposite actions, and only ground truth separates them."""
+
+    subharmonic_ratio: float = 1.35
+    """Power at 2f divided by power at f, above which the peak is treated as a
+    sub-harmonic and the reported rate doubled. A margin well above 1 so that
+    ordinary harmonic richness -- a healthy pulse carries real energy at 2f --
+    does not flip a correct reading. Half-rate locking is a known rPPG failure
+    and is why an estimate can look impeccable and still be wrong by 2x."""
+
+    pulse_max_change_bpm_per_s: float = 6.0
+    """How fast a resting heart rate may plausibly change. A rate does not go
+    from 72 to 50 in seconds while someone sits still, so a jump that large is
+    the estimator re-locking onto something else, not physiology."""
+
+    pulse_relock_windows: int = 5
+    """Consecutive windows a new rate must persist before it is accepted over
+    the tracked one. Guards against a single bad window while still allowing
+    a genuine change to come through."""
+
+    patch_min_minority_regions: int = 3
+    """When only a minority of patches agree, this many must do so. Two random
+    rates landing within the tolerance across a 138 BPM band happens roughly
+    one time in twelve -- not evidence."""
+
+    patch_majority_fraction: float = 0.5
+    patch_minority_max_spread_bpm: float = 6.0
+    """How tightly a MINORITY of patches must agree before their consensus is
+    believed. Agreement among a subset is not evidence by itself: with nine
+    patches drawing random rates across a 138 BPM band, three landing within
+    12 BPM of each other is ordinary. Measured on white noise, that produced a
+    confident 67.8 BPM. So a majority may agree loosely; a minority must agree
+    tightly or the estimate is withheld."""
+
+    patch_agreement_tolerance_bpm: float = 12.0
+    """How far a patch may sit from the consensus of the others before it is
+    dropped. Applied only with three or more patches, where a median is
+    meaningful."""
+
+    patch_max_selected: int = 5
+    """Cap on surviving patches. More agreement is better, but each one costs
+    a POS estimate per frame."""
     """Below this an ROI mean is too noisy to use; returns None instead."""
 
 

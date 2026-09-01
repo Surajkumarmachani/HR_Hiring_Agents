@@ -61,16 +61,44 @@ class POSEstimator:
                                 else window_sec)
         self.n = int(round(self.fps * self.window_sec))
         self.rgb = deque(maxlen=self.n)
+        # Arrival times, so the spectrum is scaled by the rate samples ACTUALLY
+        # arrived at rather than the rate the camera claims. A loop achieving
+        # 27 fps while the estimator assumes 30 reports a true 72 BPM as 79.9;
+        # at 22 fps it reports 98.2. The error is proportional and silent.
+        self.times = deque(maxlen=self.n)
         self.step = max(4, int(round(self.cfg.pos_step_sec * self.fps)))
+        self.last_harmonic_ratio = None
+        self.last_subharmonic_corrected = False
 
     def reset(self):
         """Empty the RGB buffer. estimate() returns None until ~10 s of new
         history has accumulated, which is the honest state after a refresh."""
         self.rgb.clear()
+        self.times.clear()
 
-    def update(self, rgb_mean):
-        """Push one frame's mean RGB (3-vector) into the buffer."""
+    def update(self, rgb_mean, t=None):
+        """Push one frame's mean RGB (3-vector) into the buffer.
+
+        `t` is the sample's time in seconds. Pass it whenever the caller knows
+        it: without timestamps the nominal rate is assumed, and any shortfall
+        scales the reported rate proportionally.
+        """
         self.rgb.append(np.asarray(rgb_mean, dtype=np.float64))
+        self.times.append(None if t is None else float(t))
+
+    def effective_fps(self):
+        """Sample rate measured from arrival times, or the nominal rate."""
+        ts = [t for t in self.times if t is not None]
+        if len(ts) < max(8, self.n // 4):
+            return self.fps
+        span = ts[-1] - ts[0]
+        if span <= 0:
+            return self.fps
+        fs = (len(ts) - 1) / span
+        # Guard against a wild value from a stalled or restarted clock.
+        if not (0.2 * self.fps <= fs <= 3.0 * self.fps):
+            return self.fps
+        return float(fs)
 
     @property
     def ready(self) -> bool:
@@ -96,8 +124,8 @@ class POSEstimator:
             H[t:t + L] += h - h.mean()                 # overlap-add
         return H
 
-    def _bandpass(self, x: np.ndarray) -> np.ndarray:
-        nyq = self.fps / 2.0
+    def _bandpass(self, x: np.ndarray, fs=None) -> np.ndarray:
+        nyq = (fs or self.fps) / 2.0
         low, high = (self.cfg.filt_low_hz / nyq,
                      min(self.cfg.filt_high_hz / nyq, 0.99))
         if not (0 < low < high < 1):
@@ -121,16 +149,17 @@ class POSEstimator:
         if not np.isfinite(rgb).all() or rgb.std(axis=0).max() < 1e-8:
             return None, 0.0, None                      # flat / dead ROI
 
+        fs = self.effective_fps()
         h = self._pos_signal(rgb)
-        h = self._bandpass(h)
+        h = self._bandpass(h, fs)
         h = h - h.mean()
         if h.std() < 1e-9:
             return None, 0.0, None
         h = h / h.std()
 
         # Welch PSD with a full-window segment for frequency resolution
-        nper = min(len(h), int(self.fps * 8))
-        freqs, psd = sps.welch(h, fs=self.fps, nperseg=nper,
+        nper = min(len(h), int(fs * 8))
+        freqs, psd = sps.welch(h, fs=fs, nperseg=nper,
                                noverlap=nper // 2, detrend="linear")
         band = (freqs >= self.cfg.search_low_hz) & (freqs <= self.cfg.search_high_hz)
         if not band.any() or psd[band].sum() <= 0:
@@ -169,6 +198,54 @@ class POSEstimator:
         harm = np.abs(bf - 2.0 * peak_f) <= hw
         sqi = float((bp[near].sum() + bp[harm].sum()) / bp.sum())
 
+        # Harmonic ratio, reported separately from SQI.
+        #
+        # A heartbeat is not a sine wave: the pressure pulse has a sharp
+        # upstroke, so its spectrum carries a second harmonic. Lighting
+        # flicker, auto-exposure hunting and a periodic head-bob do not --
+        # they are near-sinusoidal and produce one isolated peak. SQI folds
+        # the harmonic band into one number, so a clean artefact scores as
+        # well as a pulse; kept separate, the absence of a harmonic is
+        # visible evidence that the peak may not be cardiac.
+        #
+        # Only meaningful when 2f still fits inside the analysed band; above
+        # that the harmonic is filtered out and its absence proves nothing.
+        near_p = float(bp[near].sum())
+        if 2.0 * peak_f <= self.cfg.filt_high_hz and near_p > 0:
+            harmonic_ratio = float(bp[harm].sum() / near_p)
+        else:
+            harmonic_ratio = None
+
+        # Sub-harmonic correction.
+        #
+        # POS output is not sinusoidal, so a spectrum can carry more power at
+        # 2f than at f -- and argmax then picks f, reporting half the true
+        # rate. Measured on a real recording: one patch reported 42 BPM with
+        # 1.18x more power at 84, another 69 with 1.09x more at 138. Half-rate
+        # locking is a known rPPG failure and it is why a reading can look
+        # impeccable -- tight IQR, agreeing regions -- and still be wrong by a
+        # factor of two.
+        #
+        # Only corrected when the doubled rate is itself inside the
+        # plausibility band, and only on a clear margin, so ordinary harmonic
+        # richness does not flip a correct reading.
+        if (harmonic_ratio is not None
+                and harmonic_ratio > self.cfg.subharmonic_ratio
+                and 2.0 * peak_f <= self.cfg.search_high_hz):
+            peak_f = 2.0 * peak_f
+            bpm = float(peak_f * 60.0)
+            near = np.abs(bf - peak_f) <= hw
+            harm = np.abs(bf - 2.0 * peak_f) <= hw
+            sqi = float((bp[near].sum() + bp[harm].sum()) / bp.sum())
+            near_p = float(bp[near].sum())
+            harmonic_ratio = (float(bp[harm].sum() / near_p)
+                              if 2.0 * peak_f <= self.cfg.filt_high_hz
+                              and near_p > 0 else None)
+            self.last_subharmonic_corrected = True
+        else:
+            self.last_subharmonic_corrected = False
+
+        self.last_harmonic_ratio = harmonic_ratio
         return bpm, min(sqi, 1.0), h
 
 
@@ -178,25 +255,45 @@ def skin_mask_rgb_mean(frame_bgr, polygon_pts, cfg=None):
     frame_bgr: HxWx3 uint8 BGR (OpenCV order)
     polygon_pts: (K, 2) int array of pixel coords
     Returns a 3-vector in R, G, B order, or None if the ROI is unusable.
+
+    Everything happens inside the polygon's bounding box. The original
+    allocated a full-frame mask, converted the WHOLE frame to greyscale and
+    split all three channels across it -- roughly seven full-frame passes for
+    a patch of a few thousand pixels. With three fixed regions that was merely
+    wasteful; with nine adaptive patches at 30 fps it starved the capture loop
+    and drove frame drops to 75%, which in turn corrupts the frequency scale
+    the pulse estimate depends on. A patch is ~0.3% of a 1280x720 frame, so
+    cropping first is the difference between viable and not.
     """
     import cv2
 
     c = (cfg or CONFIG).rppg
     h, w = frame_bgr.shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
-    pts = np.asarray(polygon_pts, dtype=np.int32).reshape(-1, 1, 2)
-    cv2.fillConvexPoly(mask, pts, 255)
-    if mask.sum() == 0:
+    pts = np.asarray(polygon_pts, dtype=np.int32).reshape(-1, 2)
+
+    x0 = max(0, int(pts[:, 0].min()))
+    y0 = max(0, int(pts[:, 1].min()))
+    x1 = min(w, int(pts[:, 0].max()) + 1)
+    y1 = min(h, int(pts[:, 1].max()) + 1)
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+
+    crop = frame_bgr[y0:y1, x0:x1]
+    local = (pts - [x0, y0]).reshape(-1, 1, 2)
+
+    mask = np.zeros(crop.shape[:2], dtype=np.uint8)
+    cv2.fillConvexPoly(mask, local, 255)
+    if not mask.any():
         return None
 
     # Drop blown-out highlights and crushed shadows before averaging.
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     mask[(gray > c.specular_gray_max) | (gray < c.shadow_gray_min)] = 0
-    n = int((mask > 0).sum())
+    sel = mask > 0
+    n = int(sel.sum())
     if n < c.min_roi_pixels:          # too few pixels to average meaningfully
         return None
 
-    b, g, r = cv2.split(frame_bgr)
-    sel = mask > 0
-    return np.array([r[sel].mean(), g[sel].mean(), b[sel].mean()],
+    px = crop[sel].astype(np.float64)          # (n, 3) in BGR
+    return np.array([px[:, 2].mean(), px[:, 1].mean(), px[:, 0].mean()],
                     dtype=np.float64)

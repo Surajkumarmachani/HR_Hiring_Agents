@@ -8,6 +8,8 @@ numpy>=1.24
 scipy>=1.11               # POS bandpass + Welch PSD
 pandas>=2.0
 pyarrow>=14.0             # parquet feature logs
+openpyxl>=3.1             # build_xlsx.py; it imports this directly and
+                          # failed on a clean install without it
 faster-whisper>=1.0       # WP4: local ASR. Runs on-device; hosted ASR would put
                           # candidate speech in a third party's logs, which no
                           # consent notice here covers. Brings onnxruntime and

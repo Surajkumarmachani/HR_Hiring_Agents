@@ -52,7 +52,8 @@ class SessionState:
     MIN_FACE_VIS = CONFIG.fusion.min_face_vis
     MIN_SQI = CONFIG.fusion.min_sqi
 
-    def __init__(self, window_s: float = None, fps: float = 2.0, cfg=None):
+    def __init__(self, window_s: float = None, fps: float = 2.0, cfg=None,
+                 sink: str = None, flush_every: int = 600):
         self.cfg = (cfg or CONFIG).fusion
         window_s = self.cfg.window_s if window_s is None else window_s
         self.window_s = window_s
@@ -63,11 +64,78 @@ class SessionState:
         self.fps = fps
         self.frames = deque(maxlen=max(2, int(window_s * fps)))
         self.t0 = time.time()
+        # Frames are streamed to disk in batches rather than held for the
+        # whole session. all_frames existed only to build the parquet at the
+        # end, and at 27 fps it reached 328 MB after 22 minutes and would pass
+        # 890 MB in an hour -- measured on a real session, where the resulting
+        # allocator pressure dragged the capture rate from 28 fps to 25 and
+        # doubled sampling jitter. An interview is not a short recording.
         self.all_frames = []
+        self.sink = sink
+        self.flush_every = max(1, int(flush_every))
+        self.written = 0
+        self._parts = []          # paths of flushed batches
+        self._schema = None
 
     def add(self, ff: FeatureFrame):
         self.frames.append(ff)
         self.all_frames.append(ff)
+        if self.sink and len(self.all_frames) >= self.flush_every:
+            self.flush()
+
+    # ------------------------------------------------------------- sink
+    def flush(self):
+        """Write buffered frames to a batch file and release them."""
+        if not self.sink or not self.all_frames:
+            return 0
+        import pandas as pd
+        df = pd.DataFrame([f.flat() for f in self.all_frames])
+        # Freeze the column set from the first batch. Later batches are
+        # reindexed onto it: a stage that starts or stops mid-session (body
+        # tracking disabling itself, say) must not produce batches that cannot
+        # be concatenated at the end.
+        if self._schema is None:
+            self._schema = list(df.columns)
+        else:
+            df = df.reindex(columns=self._schema)
+        path = f"{self.sink}.part{len(self._parts):04d}.parquet"
+        try:
+            df.to_parquet(path, index=False)
+        except Exception:
+            path = f"{self.sink}.part{len(self._parts):04d}.csv"
+            df.to_csv(path, index=False)
+        self._parts.append(path)
+        n = len(self.all_frames)
+        self.written += n
+        self.all_frames = []
+        return n
+
+    def finalise(self, path):
+        """Flush the tail and stitch the batches into one file."""
+        import os
+        import pandas as pd
+        self.flush()
+        if not self._parts:
+            df = pd.DataFrame([f.flat() for f in self.all_frames])
+        else:
+            frames = []
+            for p in self._parts:
+                frames.append(pd.read_parquet(p) if p.endswith(".parquet")
+                              else pd.read_csv(p))
+            df = pd.concat(frames, ignore_index=True)
+        try:
+            df.to_parquet(path, index=False)
+            out = path
+        except Exception:
+            out = path.replace(".parquet", ".csv")
+            df.to_csv(out, index=False)
+        for p in self._parts:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+        self._parts = []
+        return out, len(df)
 
     def _series(self, ns, key):
         vals = [getattr(f, ns).get(key) for f in self.frames]

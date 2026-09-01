@@ -84,15 +84,30 @@ class SessionQuality:
                 self.gap_hist.append((dt, missed))
             self._prev_t = t_sec
 
-        if self.gap_hist:
-            elapsed = sum(dt for dt, _ in self.gap_hist)
-            missed = sum(m for _, m in self.gap_hist)
-            out["frame_drop_rate"] = float(missed / elapsed) if elapsed > 0 else 0.0
-            expected = len(self.gap_hist) + missed
-            out["frame_drop_fraction"] = float(missed / expected) if expected else 0.0
+        if len(self.gap_hist) >= 2:
+            gaps = np.array([dt for dt, _ in self.gap_hist], dtype=float)
+            elapsed = float(gaps.sum())
+            achieved = len(gaps) / elapsed if elapsed > 0 else 0.0
+            out["effective_fps"] = round(achieved, 1)
+
+            # Rounding each gap to a whole number of nominal frames turned
+            # ordinary jitter into phantom loss: measured on a loop running a
+            # steady 27 fps, this reported between 3% and 35% "drops" from one
+            # second to the next while nothing was ever dropped. A rate
+            # deficit is smooth and means something.
+            deficit = max(0.0, 1.0 - achieved / max(self.fps, 1e-6))
+            out["frame_drop_fraction"] = round(deficit, 3)
+            out["frame_drop_rate"] = round(deficit * self.fps, 2)
+
+            # What rPPG actually cares about is not how many frames were lost
+            # but whether the surviving ones are evenly spaced: the spectrum
+            # assumes uniform sampling.
+            out["sampling_jitter_ms"] = round(float(gaps.std()) * 1000.0, 1)
         else:
+            out["effective_fps"] = None
             out["frame_drop_rate"] = None
             out["frame_drop_fraction"] = None
+            out["sampling_jitter_ms"] = None
 
         # ---- illumination + resolution (face region) --------------------
         if landmarks_px is None or len(landmarks_px) == 0:

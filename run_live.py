@@ -79,6 +79,9 @@ def main():
     ap.add_argument("--preflight", action="store_true",
                     help="check everything the live demo needs, then exit")
     ap.add_argument("--no-body", action="store_true", help="skip pose (faster)")
+    ap.add_argument("--adaptive-roi", action="store_true",
+                    help="choose rPPG regions per subject from their signal "
+                         "behaviour instead of three fixed polygons")
     ap.add_argument("--compact", action="store_true",
                     help="minimal overlay; press d to expand at runtime")
     ap.add_argument("--config", default=None,
@@ -174,12 +177,19 @@ def main():
     # One estimator per ROI; agreement between them is itself a quality check.
     rppg = {k: POSEstimator(fps=fps, cfg=cfg)
             for k in ("forehead", "cheek_l", "cheek_r")}
+    adaptive = None
+    if args.adaptive_roi:
+        from signals.roi import AdaptiveROI
+        adaptive = AdaptiveROI(fps=fps, cfg=cfg)
+        print("[run] adaptive ROI: regions chosen from signal behaviour, "
+              "not fixed polygons")
 
     state = SessionState(fps=fps, cfg=cfg)
     t0 = time.time()
     i, last_emit = 0, -1.0
     errors = {}
     detail = not args.compact
+    last_physio, last_physio_at = {}, -1.0
     # The panel is repainted on every frame from this snapshot. Recomputing
     # the indices stays at 1 Hz (that is the expensive part); only the drawing
     # is per-frame. Without this the overlay lands on 1 frame in 30 and strobes.
@@ -227,22 +237,48 @@ def main():
 
         if fdict:
             ff.face = fdict
+            if adaptive is not None:
+                lm_px = getattr(face, "last_landmarks_px", None)
+                if lm_px is not None:
+                    adaptive.update(frame, lm_px, t)
             for name, est in rppg.items():
                 m = skin_mask_rgb_mean(frame, rois[name], cfg=cfg)
                 if m is not None:
-                    est.update(m)
-            bpms, sqis = [], []
-            for est in rppg.values():
-                b, q, _ = est.estimate()
-                if b is not None:
-                    bpms.append(b); sqis.append(q)
-            if bpms:
-                # Quality-weighted fusion across ROIs, plus their spread as an
-                # extra honesty check on the number.
-                wts = np.asarray(sqis)
-                ff.physio["bpm"] = float(np.average(bpms, weights=wts))
-                ff.physio["sqi"] = float(np.mean(sqis))
-                ff.physio["roi_spread_bpm"] = float(np.ptp(bpms)) if len(bpms) > 1 else 0.0
+                    est.update(m, t)
+
+            # Spectral estimation runs at the DISPLAY rate, not the frame rate.
+            # Each POS estimate is a Welch PSD costing ~6 ms; nine of them per
+            # frame is 1.5 s of CPU per second of video, which starved the
+            # capture loop and drove frame drops to 75% -- and a drop rate that
+            # high corrupts the very frequency scale the estimate depends on.
+            # The underlying window is 10 s long, so a value recomputed 30
+            # times a second was 29 parts waste.
+            if t - last_physio_at >= 1.0:
+                last_physio_at = t
+                if adaptive is not None:
+                    a = adaptive.estimate()
+                    last_physio = ({} if a.get("bpm") is None else
+                                   {"bpm": a["bpm"], "sqi": a["sqi"],
+                                    "roi_spread_bpm": a.get("roi_spread_bpm") or 0.0,
+                                    "n_regions": a["n_regions"],
+                                    "region_support": a["support"]})
+                else:
+                    bpms, sqis = [], []
+                    for est in rppg.values():
+                        b, q, _ = est.estimate()
+                        if b is not None:
+                            bpms.append(b)
+                            sqis.append(q)
+                    if bpms:
+                        wts = np.asarray(sqis)
+                        last_physio = {
+                            "bpm": float(np.average(bpms, weights=wts)),
+                            "sqi": float(np.mean(sqis)),
+                            "roi_spread_bpm": (float(np.ptp(bpms))
+                                               if len(bpms) > 1 else 0.0)}
+                    else:
+                        last_physio = {}
+            ff.physio.update(last_physio)
 
             if body:
                 try:
@@ -302,6 +338,8 @@ def main():
                 state.frames.clear()
                 face.reset()
                 qual.reset()
+                if adaptive is not None:
+                    adaptive.reset()
                 if body:
                     body.reset()
                 for est in rppg.values():
@@ -311,7 +349,8 @@ def main():
                 disp = FeatureFrame(t=t)
                 last_idx = {"_face_visibility": 0.0, "_status": "refreshing"}
                 print(f"[run] refreshed at t={t:.0f}s "
-                      f"({len(state.all_frames)} recorded frames kept); "
+                      f"({state.written + len(state.all_frames)} recorded "
+                      f"frames kept); "
                       f"pulse needs ~10 s of new history")
 
     cap.release()
@@ -325,7 +364,10 @@ def main():
     # The settings that produced these numbers travel WITH them. A feature
     # file whose thresholds are unknown cannot be compared to any other, and
     # WP8b's whole job is comparing across strata.
-    df = state.to_dataframe()
+    out_path, n_rows = state.finalise(args.out)
+    import pandas as pd
+    df = pd.read_parquet(out_path) if out_path.endswith(".parquet") \
+        else pd.read_csv(out_path)
     df["config_digest"] = cfg.digest()
     sidecar = os.path.splitext(args.out)[0] + ".config.json"
     with open(sidecar, "w") as fh:
@@ -334,12 +376,11 @@ def main():
                    "config": cfg.to_dict()}, fh, indent=2, sort_keys=True)
 
     try:
-        df.to_parquet(args.out)
-        print(f"[run] {len(state.all_frames)} frames -> {args.out}")
-    except Exception as e:
-        csv = args.out.replace(".parquet", ".csv")
-        df.to_csv(csv, index=False)
-        print(f"[run] parquet unavailable ({e}); wrote {csv}")
+        df.to_parquet(out_path, index=False)
+    except Exception:
+        out_path = out_path.replace(".parquet", ".csv")
+        df.to_csv(out_path, index=False)
+    print(f"[run] {n_rows} frames -> {out_path}")
     print(f"[run] config {cfg.digest()} -> {sidecar}")
 
     print("\n--- session indices (descriptive, non-decisional) ---")
@@ -366,172 +407,199 @@ def _num(v, prec=2, dash="-"):
 
 
 def draw_overlay(frame, idx, ff, t, detail=True):
-    """Full instrument panel. `detail=False` gives the original 4-line view.
+    """Full instrument panel. `detail=False` gives a compact pulse-only view.
+
+    Content is built as a list of rows first, then laid out. The panel used to
+    paint directly at a running y and assumed it would fit; every time a
+    section was added -- capture quality, then the harmonic and tracking rows,
+    then body when pose is enabled -- the bottom collided with the footer. The
+    content is genuinely variable-length now (body may be absent, harmonic and
+    tracking appear only sometimes), so the layout has to measure before it
+    paints, and spill into a second column when one will not hold it.
 
     Everything here is a measurement read back to you. Nothing is a score.
     """
-    h, w = frame.shape[:2]
-    face, body, physio = ff.face, ff.body, ff.physio
+    H, W = frame.shape[:2]
+    face, body, physio, q = ff.face, ff.body, ff.physio, ff.quality
     p = idx.get("pulse", {})
+    c = CONFIG.quality
 
-    # ---- translucent backing so text stays legible over any scene -------
-    panel_w = 330
-    panel_h = h - 16 if detail else 130
-    shade = frame.copy()
-    cv2.rectangle(shade, (8, 8), (8 + panel_w, panel_h), (0, 0, 0), -1)
-    cv2.addWeighted(shade, 0.55, frame, 0.45, 0, frame)
+    GREY, DIM, ACCENT, WARN = (210, 210, 210), (150, 150, 150), (120, 190, 255), (0, 200, 240)
+    rows = []                       # (kind, payload...)
+    def header(text):   rows.append(("header", text))
+    def pair(k, v, col=GREY): rows.append(("pair", k, v, col))
+    def line(text, col=GREY): rows.append(("line", text, col))
 
-    y = [30]
-
-    def line(s, col=(220, 220, 220), dy=17, scale=0.46):
-        cv2.putText(frame, s, (18, y[0]), cv2.FONT_HERSHEY_SIMPLEX, scale, col, 1,
-                    cv2.LINE_AA)
-        y[0] += dy
-
-    def header(s):
-        y[0] += 5
-        cv2.putText(frame, s, (18, y[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
-                    (120, 190, 255), 1, cv2.LINE_AA)
-        y[0] += 16
-
-    def pair(label, val, col=(210, 210, 210)):
-        cv2.putText(frame, label, (18, y[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.44,
-                    (150, 150, 150), 1, cv2.LINE_AA)
-        cv2.putText(frame, val, (196, y[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.44,
-                    col, 1, cv2.LINE_AA)
-        y[0] += 16
-
-    # ---- session header --------------------------------------------------
+    # ---- session ---------------------------------------------------------
     vis = idx.get("_face_visibility", 0.0)
-    vis_col = (0, 220, 0) if vis >= 0.6 else (0, 140, 255)
-    line(f"t={t:.0f}s   face_vis={vis:.2f}", vis_col)
+    line(f"t={t:.0f}s   face_vis={vis:.2f}", (0, 220, 0) if vis >= 0.6 else WARN)
     status = idx.get("_status", "-")
     if status != "ok":
-        line(status[:40], (0, 140, 255))
+        line(status[:40], WARN)
 
-    # ---- heart rate, given the room it deserves --------------------------
+    # ---- pulse -----------------------------------------------------------
     header("PULSE  (rPPG)")
     if "bpm_median" in p:
-        q = p["quality"]
-        col = (0, 220, 0) if q > 0.55 else (0, 200, 240)
-        cv2.putText(frame, f"{p['bpm_median']:.0f}", (18, y[0] + 30),
-                    cv2.FONT_HERSHEY_DUPLEX, 1.5, col, 2, cv2.LINE_AA)
-        cv2.putText(frame, "BPM", (108, y[0] + 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55, col, 1, cv2.LINE_AA)
-        # A quality bar reads faster than a number when you are on camera.
-        bar_x, bar_y = 160, y[0] + 12
-        cv2.rectangle(frame, (bar_x, bar_y), (bar_x + 150, bar_y + 14),
-                      (70, 70, 70), 1)
-        cv2.rectangle(frame, (bar_x + 1, bar_y + 1),
-                      (bar_x + 1 + int(148 * min(1.0, q)), bar_y + 13), col, -1)
-        cv2.putText(frame, f"sqi {q:.2f}", (bar_x, bar_y + 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, col, 1, cv2.LINE_AA)
-        y[0] += 56
+        rows.append(("bpm", p["bpm_median"], p["quality"]))
         if detail:
-            pair("iqr", f"{p.get('bpm_iqr', 0):.1f} bpm")
+            pair("iqr", f"{p.get('bpm_iqr', 0):.1f} bpm",
+                 WARN if p.get("bpm_iqr", 0) > 10 else GREY)
             pair("coverage", f"{p.get('coverage', 0) * 100:.0f}%")
             pair("instant bpm", _num(physio.get("bpm"), 1))
-            # Disagreement between the three ROIs is a second honesty check
-            # on the number, independent of SQI.
             spread = physio.get("roi_spread_bpm")
             pair("roi spread", f"{_num(spread, 1)} bpm",
-                 (0, 200, 240) if (spread or 0) > 8 else (210, 210, 210))
+                 WARN if (spread or 0) > 8 else GREY)
+            if physio.get("n_regions") is not None:
+                pair("regions used", f"{physio['n_regions']} "
+                                     f"({physio.get('region_support', 0):.0%})")
+            harm = physio.get("harmonic")
+            if harm is not None:
+                # No harmonic means periodic-but-not-cardiac: the check SQI
+                # cannot make.
+                pair("cardiac harmonic", _num(harm, 3),
+                     WARN if harm < 0.05 else GREY)
+            tr = physio.get("tracking")
+            if tr and tr != "tracking":
+                pair("tracking", tr[:24], WARN)
     else:
-        reason = p.get("status", "insufficient signal")
-        line(reason[:40], (0, 140, 255))
+        line(p.get("status", "insufficient signal")[:40], WARN)
         if detail and "coverage" in p:
-            pair("coverage", f"{p['coverage'] * 100:.0f}%", (0, 140, 255))
+            pair("coverage", f"{p['coverage'] * 100:.0f}%", WARN)
 
-    if not detail:
-        line("descriptive signals - not a hiring score", (120, 180, 255))
-        return
+    if detail:
+        header("FACE")
+        pair("active AUs", _num(face.get("au_active_count")))
+        pair("AU sum", _num(face.get("au_activation_sum")))
+        pair("head yaw/pitch/roll", f"{_num(face.get('head_yaw'), 0)}/"
+                                    f"{_num(face.get('head_pitch'), 0)}/"
+                                    f"{_num(face.get('head_roll'), 0)}")
+        pair("head motion", _num(face.get("head_motion_energy")))
+        pair("smile duchenne", _num(face.get("smile_duchenne")))
+        pair("smile social", _num(face.get("smile_social")))
 
-    # ---- face ------------------------------------------------------------
-    header("FACE")
-    pair("active AUs", _num(face.get("au_active_count")))
-    pair("AU sum", _num(face.get("au_activation_sum")))
-    pair("head yaw/pitch/roll", f"{_num(face.get('head_yaw'), 0)}/"
-                                f"{_num(face.get('head_pitch'), 0)}/"
-                                f"{_num(face.get('head_roll'), 0)}")
-    pair("head motion", _num(face.get("head_motion_energy")))
-    pair("smile duchenne", _num(face.get("smile_duchenne")))
-    pair("smile social", _num(face.get("smile_social")))
+        header("GAZE")
+        pair("x / y", f"{_num(face.get('gaze_x'))} / {_num(face.get('gaze_y'))}")
+        pair("magnitude", _num(face.get("gaze_magnitude")))
+        pair("on-camera ratio", _num(face.get("gaze_on_camera_ratio")))
 
-    # ---- gaze ------------------------------------------------------------
-    header("GAZE")
-    pair("x / y", f"{_num(face.get('gaze_x'))} / {_num(face.get('gaze_y'))}")
-    pair("magnitude", _num(face.get("gaze_magnitude")))
-    pair("on-camera ratio", _num(face.get("gaze_on_camera_ratio")))
+        header("BLINK")
+        pair("count", _num(face.get("blink_count")))
+        pair("mean dur", f"{_num(face.get('blink_dur_mean_ms'), 0)} ms")
+        pair("interblink", f"{_num(face.get('interblink_mean_s'), 1)} s")
+        pair("interblink cv", _num(face.get("interblink_cv")))
 
-    # ---- blink -----------------------------------------------------------
-    header("BLINK")
-    pair("count", _num(face.get("blink_count")))
-    pair("mean dur", f"{_num(face.get('blink_dur_mean_ms'), 0)} ms")
-    pair("interblink", f"{_num(face.get('interblink_mean_s'), 1)} s")
-    pair("interblink cv", _num(face.get("interblink_cv")))
+        header("BODY")
+        if body:
+            pair("shoulder tilt", f"{_num(body.get('shoulder_tilt_deg'), 1)} deg")
+            pair("lean index", _num(body.get("lean_index")))
+            pair("postural sway", _num(body.get("postural_sway"), 3))
+            pair("gesture energy", _num(body.get("gesture_energy"), 3))
+            pair("self-touch", _num(body.get("self_touch_ratio")))
+            pair("hands visible", _num(body.get("hands_visible_ratio")))
+        else:
+            line("not available this session", WARN)
 
-    # ---- body ------------------------------------------------------------
-    header("BODY")
-    if body:
-        pair("shoulder tilt", f"{_num(body.get('shoulder_tilt_deg'), 1)} deg")
-        pair("lean index", _num(body.get("lean_index")))
-        pair("postural sway", _num(body.get("postural_sway"), 3))
-        pair("gesture energy", _num(body.get("gesture_energy"), 3))
-        pair("gesture amp", _num(body.get("gesture_amplitude"), 3))
-        pair("self-touch", _num(body.get("self_touch_ratio")))
-        pair("hands visible", _num(body.get("hands_visible_ratio")))
-        pair("pose visibility", _num(body.get("pose_visibility")))
-    else:
-        line("not available this session", (0, 140, 255))
+        header("CAPTURE QUALITY")
+        sd, res = q.get("illumination_stability"), q.get("resolution")
+        eff, jit = q.get("effective_fps"), q.get("sampling_jitter_ms")
+        pair("illumination", _num(q.get("illumination_mean"), 0))
+        pair("stability (sd)", _num(sd, 1),
+             WARN if sd is not None and sd > c.advisory_illumination_sd else GREY)
+        pair("face size", f"{_num(res, 0)} px",
+             WARN if res is not None and res < c.advisory_min_face_px else GREY)
+        pair("capture rate", "-" if eff is None else f"{eff:.0f} fps")
+        # Jitter, not a drop count: the spectrum assumes evenly spaced samples.
+        pair("sampling jitter", "-" if jit is None else f"{jit:.0f} ms",
+             WARN if jit is not None and jit > 15 else GREY)
 
-    # ---- capture quality (Group F) --------------------------------------
-    header("CAPTURE QUALITY")
-    q = ff.quality
-    c = CONFIG.quality
-    illum, sd = q.get("illumination_mean"), q.get("illumination_stability")
-    res, drop = q.get("resolution"), q.get("frame_drop_fraction")
-    pair("illumination", _num(illum, 0))
-    # Advisory colouring only -- these are the catalogue's rules of thumb, not
-    # calibrated gates. WP8b sets the real lines.
-    pair("stability (sd)", _num(sd, 1),
-         (0, 200, 240) if sd is not None and sd > c.advisory_illumination_sd
-         else (210, 210, 210))
-    pair("face size", f"{_num(res, 0)} px",
-         (0, 200, 240) if res is not None and res < c.advisory_min_face_px
-         else (210, 210, 210))
-    pair("frame drops", "-" if drop is None else f"{drop * 100:.1f}%",
-         (0, 200, 240) if drop is not None
-         and drop > c.advisory_frame_drop_fraction else (210, 210, 210))
+        live = [(k, v) for k, v in face.items()
+                if k.startswith("AU") and k not in AU_PANEL_SKIP
+                and not k.endswith(("_L", "_R"))
+                and isinstance(v, float) and v > 0.15]
+        if live:
+            header("TOP ACTION UNITS")
+            for code, val in sorted(live, key=lambda kv: -kv[1])[:5]:
+                base = code.split("_")[0]
+                name = AU_DEFINITIONS.get(base, (base,))[0]
+                if code.endswith("_asym"):
+                    name += " asym"
+                pair(f"{base} {name[:18]}", f"{val:.2f}", (0, 220, 0))
 
-    # ---- strongest AUs right now ----------------------------------------
-    header("TOP ACTION UNITS")
-    live = [(k, v) for k, v in face.items()
-            if k.startswith("AU") and k not in AU_PANEL_SKIP
-            and not k.endswith(("_L", "_R"))     # duplicates of the base AU
-            and isinstance(v, float) and v > 0.15]
-    shown = 0
-    for code, val in sorted(live, key=lambda kv: -kv[1]):
-        # Bound by the space actually left, so the list never runs into the
-        # disclaimer on a shorter frame.
-        if y[0] > panel_h - 36 or shown >= 6:
-            break
-        base = code.split("_")[0]
-        name = AU_DEFINITIONS.get(base, (base,))[0]
-        if code.endswith("_asym"):
-            name += " asym"
-        pair(f"{base} {name[:18]}", f"{val:.2f}", (0, 220, 0))
-        shown += 1
-    if not live:
-        line("none above 0.15", (150, 150, 150))
-    elif shown < len(live):
-        line(f"+{len(live) - shown} more", (150, 150, 150))
+    _paint_panel(frame, rows, W, H)
 
-    # ---- the disclaimer stays on screen ---------------------------------
+
+COL_W, ROW_H, HDR_H, BPM_H = 330, 16, 21, 56
+
+
+def _paint_panel(frame, rows, W, H):
+    """Lay the rows out, spilling into a second column rather than overflowing."""
+    def row_h(r):
+        return {"header": HDR_H, "bpm": BPM_H}.get(r[0], ROW_H)
+
+    avail = H - 40                       # leave room for the footer
+    total = sum(row_h(r) for r in rows)
+    cols = 1 if total <= avail else 2
+    # Balance the columns rather than filling the first: a short second column
+    # beside a full first one reads as a mistake.
+    target = total / cols
+
+    columns, cur, used = [], [], 0
+    for r in rows:
+        if cols > 1 and used and used + row_h(r) > target and len(columns) < cols - 1:
+            columns.append(cur)
+            cur, used = [], 0
+        cur.append(r)
+        used += row_h(r)
+    columns.append(cur)
+
+    # Size the backing to the content, not to the window. A panel stretched to
+    # full height leaves a large dead rectangle over the video whenever the
+    # content is short -- which it is whenever body tracking is off.
+    panel_w = COL_W * len(columns)
+    panel_h = 30 + max(sum(row_h(r) for r in col) for col in columns) + 12
+    shade = frame.copy()
+    cv2.rectangle(shade, (8, 8), (8 + panel_w, min(H - 8, panel_h)), (0, 0, 0), -1)
+    cv2.addWeighted(shade, 0.55, frame, 0.45, 0, frame)
+
+    for ci, column in enumerate(columns):
+        x = 18 + ci * COL_W
+        y = 30
+        for r in column:
+            if r[0] == "header":
+                y += 5
+                cv2.putText(frame, r[1], (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                            (120, 190, 255), 1, cv2.LINE_AA)
+                y += HDR_H - 5
+            elif r[0] == "line":
+                cv2.putText(frame, r[1], (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.46,
+                            r[2], 1, cv2.LINE_AA)
+                y += ROW_H
+            elif r[0] == "pair":
+                cv2.putText(frame, r[1], (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.44,
+                            (150, 150, 150), 1, cv2.LINE_AA)
+                cv2.putText(frame, r[2], (x + 178, y), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.44, r[3], 1, cv2.LINE_AA)
+                y += ROW_H
+            elif r[0] == "bpm":
+                bpm, sqi = r[1], r[2]
+                col = (0, 220, 0) if sqi > 0.55 else (0, 200, 240)
+                cv2.putText(frame, f"{bpm:.0f}", (x, y + 30),
+                            cv2.FONT_HERSHEY_DUPLEX, 1.5, col, 2, cv2.LINE_AA)
+                cv2.putText(frame, "BPM", (x + 90, y + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, col, 1, cv2.LINE_AA)
+                bx, by = x + 142, y + 12
+                cv2.rectangle(frame, (bx, by), (bx + 140, by + 14), (70, 70, 70), 1)
+                cv2.rectangle(frame, (bx + 1, by + 1),
+                              (bx + 1 + int(138 * min(1.0, sqi)), by + 13), col, -1)
+                cv2.putText(frame, f"sqi {sqi:.2f}", (bx, by + 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, col, 1, cv2.LINE_AA)
+                y += BPM_H
+
     cv2.putText(frame, "descriptive signals - not a hiring score",
-                (18, panel_h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                (18, min(H - 14, panel_h - 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 (120, 180, 255), 1, cv2.LINE_AA)
     cv2.putText(frame, "r = refresh    d = detail    q = quit",
-                (w - 290, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
+                (W - 290, H - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.42,
                 (150, 150, 150), 1, cv2.LINE_AA)
 
 
