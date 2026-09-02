@@ -40,6 +40,22 @@ is a research problem; this is a routing detail.
 
 One transcriber per speaker, so a slow chunk from one side never delays the
 other.
+
+THE INTERVIEWER'S CAMERA GOES THE OTHER WAY, AND IS NOT MEASURED
+----------------------------------------------------------------
+The candidate is measured; the interviewer is not. So the interviewer's camera
+is relayed to the candidate as frames and nothing else -- no analyzer, no
+transcriber, no file. It exists because an interview conducted through a
+one-way mirror is a worse interview: the candidate has no face to read, and
+the asymmetry is felt by the only person in the call who is also being
+measured.
+
+That asymmetry is why the relay is a SEPARATE socket rather than a second use
+of the measured one. The measured path is gated on consent and on the regional
+signal policy, and it must stay that way -- but a candidate in a region where
+measurement is switched off should still see who is interviewing them, because
+being looked at is not what carries the restriction. Two sockets keeps that
+difference structural instead of leaving it to a flag someone can forget.
 """
 
 import asyncio
@@ -65,28 +81,155 @@ AU_NAMES = {code: spec[0] for code, spec in AU_DEFINITIONS.items()}
 class LiveAnalyzer:
     """Runs the signal pipeline on frames arriving from one candidate."""
 
-    def __init__(self, fps=12.0, cfg=None, with_body=True):
+    # Consent is itemised per signal, so the pipeline has to be too. Before
+    # this, a candidate who agreed to facial measures only still had their
+    # pulse and posture computed -- the record said one thing and the code did
+    # another, which is the failure that makes an itemised notice worthless.
+    ALL_SIGNALS = frozenset({"video_facial_features", "upper_body_pose",
+                             "pulse_rate_rppg", "audio_prosody",
+                             "audio_transcript"})
+
+    def __init__(self, fps=12.0, cfg=None, with_body=True, identify=False,
+                 signals=None):
         self.cfg = cfg or CONFIG
         self.fps = fps
         self.t0 = time.time()
         self.frames = 0
+
+        # None means "no consent record reached this analyzer". That is a
+        # programming error rather than a permissive default, so it measures
+        # nothing -- failing closed is the only safe direction here.
+        self.signals = frozenset(signals if signals is not None else ())
+        self.refused = sorted(self.ALL_SIGNALS - self.signals)
+
+        # Identity resolution against the locally enrolled gallery. OFF unless
+        # the session asked for it: running face recognition on everyone who
+        # joins, silently, is exactly the kind of thing that should be a
+        # deliberate per-session choice rather than a default.
+        #
+        # It answers "which enrolled colleague is this", once, and then stops.
+        # It is not a continuous check and nothing re-runs it -- the person in
+        # the chair does not change mid-call, and re-resolving every second
+        # would spend a model forward pass to re-answer a settled question.
+        self.identify = identify
+        self.identity = None
+        self._id_vecs = []
+        self._id_embedder = None
+        self._id_error = None
         self.last_emit = -1.0
         self.last_physio = {}
         self.errors = defaultdict(int)
 
-        from signals.face import FaceAnalyzer
-        self.face = FaceAnalyzer(fps=fps, cfg=self.cfg)
+        # The face is LOCATED whenever any video signal is consented, because
+        # the pulse ROIs are defined relative to facial landmarks -- you
+        # cannot sample a cheek without finding the cheek. What is gated is
+        # what gets COMPUTED and REPORTED from it: with
+        # `video_facial_features` withheld, no action unit, gaze, blink or
+        # head-pose measure is produced, and none is emitted.
+        self.face = None
+        if self.allows("video_facial_features") or self.allows("pulse_rate_rppg"):
+            from signals.face import FaceAnalyzer
+            self.face = FaceAnalyzer(fps=fps, cfg=self.cfg)
+
         self.body = None
-        if with_body:
+        if with_body and self.allows("upper_body_pose"):
             try:
                 from signals.body import BodyAnalyzer
                 self.body = BodyAnalyzer(fps=fps, cfg=self.cfg)
             except Exception:
                 self.body = None
+
+        # Capture quality is about the RECORDING, not the person -- whether
+        # they are backlit or dropping frames. It is what lets an interviewer
+        # fix a bad setup while there is still time, so it runs whenever
+        # anything is being captured at all.
         self.quality = SessionQuality(fps=fps, cfg=self.cfg)
-        self.rppg = {k: POSEstimator(fps=fps, cfg=self.cfg)
-                     for k in ("forehead", "cheek_l", "cheek_r")}
+
+        self.rppg = ({k: POSEstimator(fps=fps, cfg=self.cfg)
+                      for k in ("forehead", "cheek_l", "cheek_r")}
+                     if self.allows("pulse_rate_rppg") else {})
         self.state = SessionState(fps=fps, cfg=self.cfg)
+
+        if self.identify:
+            try:
+                from signals.identity import FaceEmbedder
+                self._id_embedder = FaceEmbedder(cfg=self.cfg)
+            except Exception as e:
+                # Optional weights, optional feature. A missing model disables
+                # identity and says so; it does not take the call down.
+                self._id_error = str(e).splitlines()[0]
+                self.identify = False
+
+    def allows(self, signal):
+        """Whether this session's consent record covers `signal`."""
+        return signal in self.signals
+
+    # ------------------------------------------------------------ identity
+    def _resolve_identity(self, frame, landmarks_px):
+        """Collect a few embeddings, then match once against the gallery."""
+        from signals.identity import Gallery
+
+        try:
+            v = self._id_embedder.embed(frame, landmarks_px)
+        except Exception:
+            return
+        if v is None:
+            return
+        self._id_vecs.append(v)
+        # Same reasoning as enrolment: one frame is one expression under one
+        # light. Averaging a handful before deciding costs a few seconds and
+        # removes most of the single-frame variance.
+        if len(self._id_vecs) < self.cfg.identity.min_enrol_frames:
+            return
+
+        mean = np.mean(self._id_vecs, axis=0)
+        mean = mean / max(np.linalg.norm(mean), 1e-9)
+        r = Gallery(cfg=self.cfg).identify(mean)
+        r["frames_used"] = len(self._id_vecs)
+        self.identity = r
+        self.identify = False          # settled; stop spending forward passes
+
+    # ------------------------------------------------------- capture gaps
+    def capture_stopped(self):
+        """Drop the rolling state when the candidate's camera goes off.
+
+        Nothing here is optional politeness. Every windowed measure in the
+        pipeline assumes its samples are contiguous, and every buffer is
+        bounded by SAMPLE COUNT rather than by time -- so a camera that comes
+        back after two minutes finds the last frames from before the gap still
+        sitting in the window, and:
+
+          - the pulse estimator runs a PSD over what is really two disjoint
+            recordings, at a sample rate measured across a span that is mostly
+            gap. Its own guard rejects that rate as wild and falls back to the
+            nominal one, which is worse than failing: a confident number over
+            data that was never one recording;
+          - head motion is a frame-to-frame difference, so it reports the
+            difference between two poses minutes apart as movement that
+            happened in a single frame;
+          - the frame-drop rate reports the entire gap as dropped frames, so
+            capture quality looks broken for the next window.
+
+        None of those raise. They produce numbers that look ordinary, which is
+        exactly the failure class this project treats as the one worth
+        engineering against. So the window is dropped and the measures start
+        again from nothing.
+
+        The cost is the ~10 s warm-up before a pulse reappears -- the same
+        warm-up as at the start of a session, and it reads the same way on the
+        panel: "insufficient signal". The cumulative blink count is kept,
+        because it counts blinks that were actually observed and no gap makes
+        those unobserved.
+        """
+        for est in self.rppg.values():
+            est.reset()
+        self.last_physio = {}
+        self.state.reset_window()
+        if self.face is not None:
+            self.face.reset_windows()
+        self.quality.reset()
+        if self.body:
+            self.body.reset()
 
     def close(self):
         for stage in (self.face, self.body):
@@ -106,11 +249,13 @@ class LiveAnalyzer:
         ts_ms = int(t * 1000)
 
         ff = FeatureFrame(t=t)
-        try:
-            fdict, rois = self.face.process(frame, ts_ms)
-        except Exception:
-            self.errors["face"] += 1
-            fdict, rois = None, None
+        fdict, rois = None, None
+        if self.face is not None:
+            try:
+                fdict, rois = self.face.process(frame, ts_ms)
+            except Exception:
+                self.errors["face"] += 1
+                fdict, rois = None, None
         ff.quality["face_detected"] = 1.0 if fdict else 0.0
 
         try:
@@ -120,7 +265,17 @@ class LiveAnalyzer:
             self.errors["quality"] += 1
 
         if fdict:
-            ff.face = fdict
+            # Landmarks were needed to place the pulse ROIs. The facial
+            # MEASURES derived from them are only kept if consented to.
+            if self.allows("video_facial_features"):
+                ff.face = fdict
+            if self.identify and self._id_embedder is not None:
+                lm_px = getattr(self.face, "last_landmarks_px", None)
+                if lm_px is not None and self.frames % 5 == 0:
+                    # Every 5th frame, so the samples span a second or two
+                    # rather than being five shots of one instant.
+                    self._resolve_identity(frame, lm_px)
+
             for name, est in self.rppg.items():
                 m = skin_mask_rgb_mean(frame, rois[name], cfg=self.cfg)
                 if m is not None:
@@ -163,7 +318,14 @@ class LiveAnalyzer:
         return self.snapshot(ff, t)
 
     def snapshot(self, ff, t):
-        """Everything the desktop diagnostic overlay shows, as JSON."""
+        """Everything the desktop diagnostic overlay shows, as JSON.
+
+        A signal the candidate withheld is reported as WITHHELD rather than
+        as absent. An empty pulse tile could mean "no consent", "no signal
+        yet" or "the estimator refused", and an interviewer who cannot tell
+        those apart will read the wrong one -- most likely as something about
+        the candidate.
+        """
         idx = self.state.indices()
         p = idx.get("pulse", {})
         f, b, q, ph = ff.face, ff.body, ff.quality, ff.physio
@@ -180,7 +342,9 @@ class LiveAnalyzer:
             "effective_fps": round(self.frames / max(t, 1e-6), 1),
             "face_visibility": round(idx.get("_face_visibility", 0.0), 2),
             "status": idx.get("_status", "-"),
-            "pulse": ({"bpm": round(p["bpm_median"]),
+            "pulse": ({"status": "withheld"}
+                      if not self.allows("pulse_rate_rppg") else
+                      {"bpm": round(p["bpm_median"]),
                        "sqi": round(p["quality"], 2),
                        "coverage": round(p.get("coverage", 0), 2),
                        "iqr": round(p.get("bpm_iqr", 0), 1),
@@ -188,7 +352,8 @@ class LiveAnalyzer:
                        "roi_spread": _r(ph.get("roi_spread_bpm"), 1)}
                       if "bpm_median" in p else
                       {"status": p.get("status", "insufficient signal")}),
-            "face": {
+            "face": ({"withheld": True} if not
+                     self.allows("video_facial_features") else {
                 "active_aus": f.get("au_active_count"),
                 "au_sum": _r(f.get("au_activation_sum")),
                 "head": [round(f.get("head_yaw", 0)), round(f.get("head_pitch", 0)),
@@ -196,15 +361,21 @@ class LiveAnalyzer:
                 "head_motion": _r(f.get("head_motion_energy")),
                 "smile_duchenne": _r(f.get("smile_duchenne")),
                 "smile_social": _r(f.get("smile_social")),
-            },
-            "gaze": {"x": _r(f.get("gaze_x")), "y": _r(f.get("gaze_y")),
-                     "magnitude": _r(f.get("gaze_magnitude")),
-                     "on_camera": _r(f.get("gaze_on_camera_ratio"))},
-            "blink": {"count": f.get("blink_count"),
-                      "mean_dur_ms": _r(f.get("blink_dur_mean_ms"), 0),
-                      "interblink_s": _r(f.get("interblink_mean_s"), 1),
-                      "cv": _r(f.get("interblink_cv"))},
-            "body": ({"shoulder_tilt": _r(b.get("shoulder_tilt_deg"), 1),
+            }),
+            "gaze": ({"withheld": True} if not
+                     self.allows("video_facial_features") else
+                     {"x": _r(f.get("gaze_x")), "y": _r(f.get("gaze_y")),
+                      "magnitude": _r(f.get("gaze_magnitude")),
+                      "on_camera": _r(f.get("gaze_on_camera_ratio"))}),
+            "blink": ({"withheld": True} if not
+                      self.allows("video_facial_features") else
+                      {"count": f.get("blink_count"),
+                       "mean_dur_ms": _r(f.get("blink_dur_mean_ms"), 0),
+                       "interblink_s": _r(f.get("interblink_mean_s"), 1),
+                       "cv": _r(f.get("interblink_cv"))}),
+            "body": ({"withheld": True}
+                     if not self.allows("upper_body_pose") else
+                     {"shoulder_tilt": _r(b.get("shoulder_tilt_deg"), 1),
                       "lean": _r(b.get("lean_index")),
                       "sway": _r(b.get("postural_sway"), 3),
                       "gesture_energy": _r(b.get("gesture_energy"), 3),
@@ -225,6 +396,16 @@ class LiveAnalyzer:
                          "name": AU_NAMES.get(c.split("_")[0], c),
                          "value": round(v, 2),
                          "asym": c.endswith("_asym")} for c, v in aus],
+            # What this candidate declined, so the panel reads a blank tile as
+            # a choice rather than as a fault or as a finding.
+            "withheld": self.refused,
+            "identity": ({"status": self.identity["status"],
+                          "subject_id": self.identity.get("subject_id"),
+                          "score": self.identity.get("best_score"),
+                          "margin": self.identity.get("margin")}
+                         if self.identity else
+                         ({"status": "resolving"} if self._id_embedder
+                          else None)),
             "advisory": "Provisional live read. Descriptive only — not a score.",
         }
 
@@ -491,10 +672,29 @@ class Hub:
                                               # shared so speaker changes break
                                               # a line
         self.latest = {}                      # sid -> last snapshot
+        # One-deep send slot per watcher, so a slow panel connection drops
+        # frames instead of throttling the candidate's capture loop.
+        self._inflight = {}                   # WebSocket -> True while sending
+        self.dropped = {}                     # sid -> frames dropped, for the
+                                              # panel to see rather than guess
 
-    def analyzer(self, sid, fps=12.0):
+        # The interviewer's camera, travelling the other way. Kept apart from
+        # `watchers` because it is the opposite kind of stream: watchers
+        # receive frames that WILL be measured, these carry frames that never
+        # are, and nothing here is retained for even one frame longer than the
+        # relay takes.
+        self.viewers = defaultdict(set)       # sid -> {candidate WebSocket}
+        self.on_camera = {}                   # sid -> interviewer name
+        self.publishers = {}                  # sid -> the publisher's socket
+        # Whether the candidate's camera is on. Kept because `latest` is sent
+        # to an interviewer who joins mid-session, and a snapshot from before
+        # the camera went off would arrive looking exactly like a live one.
+        self.capture = {}                     # sid -> last capture message
+
+    def analyzer(self, sid, fps=12.0, identify=False, signals=None):
         if sid not in self.analyzers:
-            self.analyzers[sid] = LiveAnalyzer(fps=fps)
+            self.analyzers[sid] = LiveAnalyzer(fps=fps, identify=identify,
+                                               signals=signals)
         return self.analyzers[sid]
 
     def transcriber(self, sid, speaker):
@@ -522,6 +722,7 @@ class Hub:
         if a:
             a.close()
         self.latest.pop(sid, None)
+        self.capture.pop(sid, None)
 
     def drop_audio(self, sid, speaker=None):
         for key in [k for k in self.transcribers
@@ -531,18 +732,110 @@ class Hub:
             self.started.pop(sid, None)
             self.builders.pop(sid, None)
 
-    async def broadcast(self, sid, *, frame=None, measures=None):
+    # -------------------------------------------- the interviewer's camera
+    def claim_camera(self, sid, who, ws=None):
+        """Give one panel member the camera slot. True if they got it.
+
+        One slot, not many. The candidate's page renders a single feed, so two
+        panel members publishing into it would interleave two JPEG streams
+        into one image element and produce a flicker rather than a video call.
+        Refusing the second with a reason they can read beats showing the
+        candidate something broken, and the panel hands the slot over by one
+        of them turning their camera off.
+        """
+        holder = self.on_camera.get(sid)
+        if holder is not None and holder != who:
+            return False
+        self.on_camera[sid] = who
+        if ws is not None:
+            self.publishers[sid] = ws
+        return True
+
+    def release_camera(self, sid, who):
+        """Free the slot, but only for whoever holds it."""
+        if self.on_camera.get(sid) == who:
+            self.on_camera.pop(sid, None)
+            self.publishers.pop(sid, None)
+
+    async def tell_publisher(self, sid):
+        """Tell whoever is on camera how many people can actually see them.
+
+        Without this the interviewer's page can only report that its own
+        camera is on, which it would phrase as "the candidate can see you" --
+        true or not. An interviewer who turns their camera on before the
+        candidate joins would be told they are visible to nobody, and would
+        have no way to tell that apart from a broken relay. Same principle as
+        the pulse tile refusing to show a number it cannot support.
+        """
+        ws = self.publishers.get(sid)
+        if ws is None:
+            return
+        try:
+            await ws.send_json({"type": "viewers",
+                                "count": len(self.viewers.get(sid, ()))})
+        except Exception:
+            self.publishers.pop(sid, None)
+
+    def camera_state(self, sid):
+        return {"type": "presence", "on_camera": self.on_camera.get(sid)}
+
+    async def send_to_candidate(self, sid, *, frame=None, state=None):
+        """Fan out to the candidate's viewer sockets. Nothing is stored."""
         dead = []
-        for ws in list(self.watchers.get(sid, ())):
+        for ws in list(self.viewers.get(sid, ())):
             try:
                 if frame is not None:
                     await ws.send_bytes(frame)
-                if measures is not None:
-                    await ws.send_json(measures)
+                if state is not None:
+                    await ws.send_json(state)
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            self.watchers[sid].discard(ws)
+            self.viewers[sid].discard(ws)
+
+    async def broadcast(self, sid, *, frame=None, measures=None):
+        """Fan out to the panel. A slow watcher loses frames, not the capture.
+
+        This used to await every watcher's send in turn, inside the
+        candidate's receive loop -- so one panel member on a slow connection
+        throttled the candidate's capture rate for everyone, and the
+        measurement with it. Live video is the one payload where dropping is
+        strictly better than queueing: a frame that arrives late is worthless,
+        and the queue it waited in delayed every frame behind it.
+
+        So a frame send is fire-and-forget with a one-deep slot per watcher.
+        If the previous frame has not left yet, this one is dropped for that
+        watcher and counted. Measurement JSON and transcript lines are small,
+        ordered and cheap, so those are still awaited -- losing a transcript
+        line would corrupt the record, and losing a frame does not.
+        """
+        dead = []
+        for ws in list(self.watchers.get(sid, ())):
+            if frame is not None:
+                if self._inflight.get(ws):
+                    self.dropped[sid] = self.dropped.get(sid, 0) + 1
+                    continue
+                self._inflight[ws] = True
+                asyncio.create_task(self._send_frame(sid, ws, frame))
+            if measures is not None:
+                try:
+                    await ws.send_json(measures)
+                except Exception:
+                    dead.append(ws)
+        for ws in dead:
+            self.discard_watcher(sid, ws)
+
+    async def _send_frame(self, sid, ws, frame):
+        try:
+            await ws.send_bytes(frame)
+        except Exception:
+            self.discard_watcher(sid, ws)
+        finally:
+            self._inflight.pop(ws, None)
+
+    def discard_watcher(self, sid, ws):
+        self.watchers[sid].discard(ws)
+        self._inflight.pop(ws, None)
 
 
 HUB = Hub()

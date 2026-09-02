@@ -190,14 +190,26 @@ class FaceAnalyzer:
         self.head_motion = deque(maxlen=int(fps * self.cfg.head_motion_window_sec))
         self.gaze_on_camera = deque(maxlen=int(fps * self.cfg.gaze_window_sec))
 
-    def reset(self):
-        """Clear blink counts, motion and gaze history. Keeps the loaded
-        model -- re-creating the landmarker would stall the capture loop."""
-        self.blink = BlinkDetector(cfg=self._cfg_root)
+    def reset_windows(self):
+        """Clear the rolling windows, keeping the session's blink totals.
+
+        For an interruption in capture rather than a new session. Every window
+        here assumes contiguous samples -- head motion is a frame-to-frame
+        difference, so across a gap it measures the difference between two
+        poses minutes apart and reports it as movement that happened in one
+        frame. The blink COUNT survives, because it counts blinks that were
+        actually seen and no gap makes those unseen.
+        """
         self._prev_yaw = None
         self._prev_pitch = None
         self.head_motion.clear()
         self.gaze_on_camera.clear()
+
+    def reset(self):
+        """Clear blink counts, motion and gaze history. Keeps the loaded
+        model -- re-creating the landmarker would stall the capture loop."""
+        self.blink = BlinkDetector(cfg=self._cfg_root)
+        self.reset_windows()
 
     def process(self, frame_bgr, timestamp_ms: int):
         """Returns (features: dict, rois: dict[str, ndarray]) or (None, None)."""

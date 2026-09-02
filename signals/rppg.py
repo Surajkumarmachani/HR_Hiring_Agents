@@ -100,6 +100,19 @@ class POSEstimator:
             return self.fps
         return float(fs)
 
+    def reset(self):
+        """Drop the buffer. Call this whenever capture was interrupted.
+
+        The buffer is bounded by SAMPLE COUNT, not by time, so samples from
+        before a gap sit in the window until enough new ones push them out.
+        A PSD over that window is a PSD over two disjoint recordings, and
+        `effective_fps` cannot save it: a long gap makes the measured rate
+        wild, which trips its guard and falls back to the NOMINAL rate --
+        turning a detectable problem into a confident wrong number.
+        """
+        self.rgb.clear()
+        self.times.clear()
+
     @property
     def ready(self) -> bool:
         return len(self.rgb) >= self.n

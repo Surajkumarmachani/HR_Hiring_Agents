@@ -57,14 +57,18 @@
           hold about you on request.</span></div>
       </div>
 
-      <label class="agree">
-        <input type="checkbox" id="agree">
-        <span>I have read the notice and agree to what it describes.</span>
-      </label>
-      <div style="margin-top:16px">
-        <button class="btn" id="giveConsent" disabled>Agree and continue</button>
+      <h2 style="margin-top:26px">What you agree to</h2>
+      <p>Each of these is a separate choice. Tick the ones you agree to and
+         leave the rest — <strong>you can leave all of them unticked and your
+         interview goes ahead exactly the same way.</strong> Nothing here
+         affects the questions you are asked or how your answers are scored,
+         and your choices are not shown to your interviewer.</p>
+      <div id="signalList"></div>
+      <div style="margin-top:22px">
+        <button class="btn" id="giveConsent">Continue</button>
         <span class="msg bad" id="cErr" style="display:inline;margin-left:10px"></span>
       </div>
+      <p class="msg" id="consentSummary" style="text-align:left"></p>
     </div>
   </section>
 
@@ -73,7 +77,8 @@
     <div class="panel">
       <h2>Check your camera and microphone</h2>
       <p>This is what your interviewer will see. Adjust your lighting or seating
-         now if you would like to.</p>
+         now if you would like to. Once you join, this moves to the corner and
+         your interviewer takes the main view.</p>
 
       <div class="stage" id="lobbyStage">
         <video id="lobbyVideo" autoplay muted playsinline></video>
@@ -103,12 +108,19 @@
   <!-- in call ------------------------------------------------------- -->
   <section id="call" hidden>
     <div class="stage" id="callStage">
-      <video id="callVideo" autoplay muted playsinline></video>
-      <div class="camoff">Your camera is off</div>
+      <!-- The interviewer, relayed as frames. Their camera is theirs to turn
+           on, so this side never assumes it is there. -->
+      <img id="intvFeed" alt="Your interviewer" hidden>
+      <div class="waiting" id="intvWait">Waiting for your interviewer to turn
+        on their camera.</div>
       <div class="stage-top">
         <span class="chip live" id="liveChip"><span class="dot"></span>
           <span id="liveTxt">Your interviewer can see you</span></span>
         <span class="chip timer" id="timer">00:00</span>
+      </div>
+      <div class="pip">
+        <video id="callVideo" autoplay muted playsinline></video>
+        <div class="camoff">Your camera is off</div>
       </div>
     </div>
 
@@ -144,7 +156,9 @@ const SID = location.pathname.split("/")[2];
 const T = new URLSearchParams(location.search).get("t");
 const WS = location.protocol === "https:" ? "wss" : "ws";
 
-let state = null, stream = null, vws = null, aws = null;
+let state = null, stream = null, vws = null, aws = null, pws = null;
+let CHUNK_MS = 3000;                  // replaced from the server on load
+let presenceRetry = null, left = false, presenceStopped = false;
 let frameTimer = null, audioRec = null, audioLoop = null, tick = null;
 let meterCtx = null, meterRaf = null, started = 0;
 const cv = document.createElement("canvas");
@@ -155,6 +169,7 @@ async function load() {
   if (!r.ok) { $("#role").textContent = "This link is not valid."; return; }
   state = await r.json();
 
+  if (state.chunk_seconds) CHUNK_MS = Math.round(state.chunk_seconds * 1000);
   if (state.organisation) { $("#org").textContent = state.organisation; $("#org").hidden = false; }
   $("#greeting").textContent = state.candidate_name
     ? `Hello, ${state.candidate_name}` : "Your interview";
@@ -183,7 +198,7 @@ async function load() {
   }
   $("#notice").textContent = state.notice_markdown || "(notice unavailable)";
   if (state.consent_given) { $("#lobby").hidden = false; initMedia(); }
-  else $("#consent").hidden = false;
+  else { renderSignals(); $("#consent").hidden = false; }
 }
 
 const fmt = iso => new Date(iso).toLocaleString(undefined,
@@ -215,12 +230,52 @@ function showWaiting(sch) {
   tickDown(); setInterval(tickDown, 1000);
 }
 
-$("#agree").onchange = e => { $("#giveConsent").disabled = !e.target.checked; };
+// Plain-language label for each signal the server offers. Keyed by the
+// consent name so the two cannot drift: a signal the server offers with no
+// label here is still rendered, under its own name, rather than silently
+// dropped from the list the candidate sees.
+const SIGNAL_LABELS = {
+  video_facial_features: ["Video of my face",
+    "Facial movement, where I am looking, blinking, head position."],
+  upper_body_pose: ["Upper-body video",
+    "Posture, lean, and hand movement."],
+  pulse_rate_rppg: ["Pulse estimated from video",
+    "Heart rate worked out from small colour changes in the video."],
+  audio_prosody: ["Voice measurements",
+    "Pitch, pace and pauses in my speech. Not the words."],
+  audio_transcript: ["A transcript of what I say",
+    "My words written down, so my interviewer can quote me accurately."],
+  resume_question_generation: ["Questions prepared from my CV",
+    "My CV text and my answers are sent to an outside AI service, which " +
+    "sends back suggested questions. It does not score or assess me. " +
+    "Contact details are removed first."],
+};
+
+function renderSignals() {
+  // Unticked by default. An opt-out default is not a choice, and consent that
+  // was not actively given is the thing this whole page exists to avoid.
+  $("#signalList").innerHTML = (state.signals || []).map(sig => {
+    const [title, detail] = SIGNAL_LABELS[sig] || [sig, ""];
+    return `<label class="agree consent-item">
+      <input type="checkbox" data-signal="${sig}">
+      <span><b>${title}</b>${detail ? `<em>${detail}</em>` : ""}</span>
+    </label>`;
+  }).join("");
+  const boxes = document.querySelectorAll('#signalList input[data-signal]');
+  boxes.forEach(b => b.onchange = () => {
+    const n = [...boxes].filter(x => x.checked).length;
+    $("#consentSummary").textContent = n
+      ? `You have agreed to ${n} of ${boxes.length}.`
+      : "You have agreed to none of these. Your interview goes ahead as normal.";
+  });
+}
 
 $("#giveConsent").onclick = async () => {
+  const ticked = [...document.querySelectorAll('#signalList input[data-signal]')]
+    .filter(b => b.checked).map(b => b.dataset.signal);
   const r = await fetch(`/api/sessions/${SID}/consent`, {method:"POST",
     headers:{"content-type":"application/json"},
-    body: JSON.stringify({t: T, agreed: true, signals: state.signals})});
+    body: JSON.stringify({t: T, agreed: true, signals: ticked})});
   const d = await r.json();
   if (!r.ok) { $("#cErr").textContent = d.detail || "Could not record consent."; return; }
   $("#consent").hidden = true; $("#lobby").hidden = false; initMedia();
@@ -301,7 +356,7 @@ $("#join").onclick = () => {
     $("#timer").textContent =
       `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
   }, 1000);
-  connectVideo(); connectAudio();
+  connectVideo(); connectAudio(); connectPresence();
 };
 
 function connectVideo() {
@@ -323,6 +378,70 @@ function connectVideo() {
   vws.onmessage = e => { try { const d = JSON.parse(e.data);
     if (d.error) setStatus(d.error + ": " + (d.reason || ""), true); } catch (_) {} };
   vws.onclose = () => clearInterval(frameTimer);
+}
+
+// ---- the interviewer's camera ----------------------------------------
+// Receive-only: frames as binary, who is on camera as JSON. A separate socket
+// from the one that carries this candidate's own frames, and not gated on
+// consent or on the regional policy -- seeing the person interviewing you is
+// not a measurement of you, so it still works in a session where measurement
+// is switched off.
+function connectPresence() {
+  const img = $("#intvFeed"), wait = $("#intvWait");
+  let url = null, who = null, idle = null, ping = null;
+
+  const placeholder = msg => {
+    img.hidden = true; wait.hidden = false;
+    wait.textContent = msg || (who
+      ? who + " has turned their camera off."
+      : "Waiting for your interviewer to turn on their camera.");
+  };
+
+  pws = new WebSocket(
+    `${WS}://${location.host}/ws/presence/${SID}?t=${encodeURIComponent(T)}`);
+  pws.binaryType = "blob";
+
+  pws.onmessage = e => {
+    if (typeof e.data !== "string") {
+      wait.hidden = true; img.hidden = false;
+      const next = URL.createObjectURL(e.data);
+      img.src = next;
+      if (url) URL.revokeObjectURL(url);
+      url = next;
+      // Frames stopping while the socket stays open means the connection went,
+      // not the camera. Say that, rather than leaving a frozen still on screen
+      // that the candidate reads as a person sitting very still.
+      clearTimeout(idle);
+      idle = setTimeout(() => placeholder(
+        "Your interviewer's video has stopped."), 4000);
+      return;
+    }
+    try {
+      const d = JSON.parse(e.data);
+      // A refusal -- an expired window, a bad link. Reconnecting cannot fix
+      // any of them, so stop rather than poll a closed door every 3 seconds.
+      if (d.error) {
+        presenceStopped = true;
+        clearTimeout(idle);
+        placeholder("Your interviewer's video is not available.");
+        return;
+      }
+      if (d.type !== "presence") return;
+      if (d.on_camera) { who = d.on_camera; }
+      else { clearTimeout(idle); placeholder(); }
+    } catch (_) {}
+  };
+
+  // The interview carries on if this socket drops, so it reconnects quietly:
+  // a transport warning here would be alarming and there is nothing the
+  // candidate could do about it.
+  pws.onclose = () => {
+    clearInterval(ping); clearTimeout(idle);
+    placeholder();
+    if (!left && !presenceStopped)
+      presenceRetry = setTimeout(connectPresence, 3000);
+  };
+  ping = setInterval(() => pws.readyState === 1 && pws.send("ping"), 20000);
 }
 
 // Each chunk is a COMPLETE webm file. MediaRecorder writes headers only on the
@@ -347,9 +466,12 @@ function connectAudio() {
         blob.arrayBuffer().then(a => aws.send(a));
     };
     audioRec.start();
-    setTimeout(() => audioRec.state !== "inactive" && audioRec.stop(), 6000);
+    setTimeout(() => audioRec.state !== "inactive" && audioRec.stop(), CHUNK_MS);
   };
-  aws.onopen = () => { cycle(); audioLoop = setInterval(cycle, 6200); };
+  // The chunk length is the floor on how late the transcript runs -- a chunk
+  // cannot be sent until it is complete -- so it comes from the server rather
+  // than being hard-coded here, in two places that could drift apart.
+  aws.onopen = () => { cycle(); audioLoop = setInterval(cycle, CHUNK_MS + 200); };
   aws.onclose = () => clearInterval(audioLoop);
 }
 
@@ -373,12 +495,20 @@ $("#camBtn").onclick = () => {
   $("#liveChip").classList.toggle("live", v.enabled);
   $("#liveTxt").textContent = v.enabled
     ? "Your interviewer can see you" : "Your interviewer cannot see you";
+  // Say so on the frame socket as well. Stopping the frames is not the same
+  // as saying why they stopped: without this the panel is left holding the
+  // last frame and the last set of numbers, which is indistinguishable from
+  // a candidate sitting very still.
+  if (vws && vws.readyState === 1)
+    vws.send(JSON.stringify({camera: v.enabled}));
 };
 
 $("#leave").onclick = () => {
+  left = true;                       // stops the presence socket reconnecting
   clearInterval(frameTimer); clearInterval(audioLoop); clearInterval(tick);
+  clearTimeout(presenceRetry);
   try { audioRec && audioRec.state !== "inactive" && audioRec.stop(); } catch (_) {}
-  vws && vws.close(); aws && aws.close();
+  vws && vws.close(); aws && aws.close(); pws && pws.close();
   stream && stream.getTracks().forEach(t => t.stop());
   $("#call").hidden = true; $("#ended").hidden = false;
   $("#shell").classList.remove("wide");

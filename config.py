@@ -314,6 +314,26 @@ class TextConfig:
     words moved both specificity and STAR."""
 
     # --- transcript line breaking ---------------------------------------
+    chunk_seconds: float = 3.0
+    """How long each audio chunk is before it is sent for transcription.
+
+    This is the FLOOR on transcript latency, and it dominates everything
+    else. A chunk cannot be sent until it is complete, so a word spoken just
+    after a chunk starts waits the full length before it is even transmitted;
+    add transcription and the round trip and the panel sees it at roughly
+    chunk_seconds + 1.
+
+    It was 6.0, which put a visible ~7 second lag on the transcript and on
+    every suggestion built from it. Measured on this hardware, `base.en`
+    transcribes far faster than real time, so the length was buying nothing
+    that latency was not paying for.
+
+    Lower is not free. Each boundary is a place where the transcriber has not
+    heard what comes next, so it inserts a full stop and can clip a word --
+    which is exactly what TranscriptBuilder exists to repair, and it repairs
+    more often at 3 s than at 6 s. Below about 2 s the boundaries start to
+    cost accuracy rather than just tidiness."""
+
     transcript_pause_sec: float = 1.1
     """Silence long enough to end a line. Below this the speaker is still
     going, so their words belong on the line they started -- the 6 s chunk
@@ -371,6 +391,139 @@ class QualityConfig:
 
 
 @dataclass(frozen=True)
+class IdentityConfig:
+    """Enrolled-gallery face identity. See signals/identity.py.
+
+    Nothing here is on a capture path. Identity resolves WHICH ENROLLED
+    COLLEAGUE is in front of the camera so a recording lands under the right
+    consent record; it never runs against anyone who has not enrolled.
+    """
+
+    match_threshold: float = 0.363
+    """Cosine similarity above which two faces are the same person.
+
+    SFace's own published operating point, kept rather than invented: the
+    OpenCV Zoo model card gives 0.363 for cosine, validated on LFW. Choosing
+    a number here by trying it on a few colleagues would be calibrating on the
+    same five faces the gallery holds, which measures nothing.
+
+    Raise it to make false matches rarer and refusals more common. On a
+    five-person gallery the cost of a refusal is retyping a name; the cost of
+    a false match is a recording filed against the wrong person's consent
+    record, so the asymmetry favours refusing."""
+
+    min_margin: float = 0.10
+    """How far the best match must beat the SECOND best.
+
+    A gallery of colleagues can contain relatives, or simply two people the
+    model finds similar. If the top two scores are 0.51 and 0.49, the top one
+    is not an identification -- it is a coin flip that cleared a threshold.
+    Below this margin the result is UNKNOWN and a human types the name."""
+
+    min_enrol_frames: int = 5
+    """Frames averaged into an enrolment template. One frame encodes one
+    expression under one light; several make the template the person rather
+    than the moment."""
+
+    max_enrol_spread: float = 0.25
+    """Enrolment frames must agree with each other at least this well. A wider
+    spread means the frames are not all the same face under the same
+    conditions -- two people in shot, or a detector that wandered -- and a
+    template averaged from those matches everybody weakly."""
+
+    min_face_px: float = 80.0
+    """Smaller than this and the crop carries too little detail to identify.
+    Refuse rather than return a low-confidence guess."""
+
+
+@dataclass(frozen=True)
+class GenerationConfig:
+    """Resume-derived and follow-up question generation. See interview/generate.py.
+
+    THIS IS THE ONE PLACE IN THE SYSTEM THAT SENDS DATA OFF THE MACHINE
+    ------------------------------------------------------------------
+    The provider is Google (Gemini, the Generative Language API). It is not
+    configurable, deliberately: it is named in the candidate notice, it
+    decides which company holds the data processing agreement, and it fixes
+    the jurisdiction of the transfer. A setting that could change all three
+    without changing the paperwork would be a setting that makes the
+    disclosure false.
+
+    Everything else here is local by construction: ASR runs on-device
+    specifically so candidate speech never reaches a third party's logs, and
+    face identity matches against a gallery on this disk. Question generation
+    is the deliberate exception, chosen by the operator, and the consent
+    notice has to name it. `enabled = False` turns it off entirely and the
+    interview runs exactly as it did before -- which is also what a session
+    should do if the notice in force does not cover it.
+
+    Nothing generated here is ever rated. See interview/model.py for why the
+    five core questions stay fixed.
+    """
+
+    enabled: bool = True
+    """Master switch. False means no resume upload, no generation, no egress."""
+
+    cv_derived_interview: bool = True
+    """Where the questions come from.
+
+    True  -- the question set is GENERATED from each candidate's CV. Nothing
+             is shown and nothing can be rated until a CV has been read. The
+             interviewer is given, per question, what to listen for and what
+             to ask if the answer stays shallow, so someone who does not share
+             the candidate's background can still run the interview.
+    False -- the guide's fixed questions are asked of every candidate in the
+             same order, and CV-derived questions are extra probes attached to
+             them.
+
+    The trade is comparability. Under False every candidate answers the same
+    questions, which is the property that carries most of a structured
+    interview's validity. Under True they do not, and two candidates are
+    comparable on the competencies and anchors -- which stay fixed -- but not
+    on the questions that produced the evidence. The summary says so, and
+    `Interview.coverage()` reports which competencies had no question aimed at
+    them at all."""
+
+    gemini_model: str = "gemini-pro-latest"
+    """Model id for the Gemini path.
+
+    An ALIAS on purpose. A pinned id goes stale and then fails in a way that
+    reads like a bug: `gemini-2.5-pro` was the default here and Google
+    retired it for new projects, returning "no longer available to new
+    users" -- while still listing it among the models the key could call.
+
+    The alias costs nothing in auditability because the provenance records
+    `served_by_model` from the RESPONSE, so every generation says which model
+    actually answered rather than which one was requested. If you need a
+    pinned id for reproducibility, set one and expect to revisit it.
+
+    `python3 check_api.py --list-models` prints what the key can call, but
+    note that the listing includes retired models -- it is not proof of
+    callability. Only a real request is."""
+
+    max_probes_per_question: int = 3
+    """Per core question. More than three and the panel cannot read them while
+    listening, so they go unused -- or worse, get asked at the expense of the
+    fixed question they were meant to support."""
+
+    max_followups: int = 3
+
+    redact_contact_details: bool = True
+    """Strip emails, phones and profile links before the CV is sent. They
+    carry no question value, so sending them is exposure for nothing. This is
+    NOT anonymisation -- see resume_text.redact_contact_details."""
+
+    max_resume_chars: int = 24000
+    """About 8-10 pages. A longer document is truncated at a paragraph
+    boundary and the truncation is REPORTED, never silent: a panel told
+    "generated from the whole CV" when half was dropped would trust the
+    coverage of the questions more than it should."""
+
+    max_transcript_chars: int = 6000
+    """How much of the answer-so-far is sent for a follow-up."""
+
+
+@dataclass(frozen=True)
 class FusionConfig:
     """Windowed indices and their publication gates. See fusion.py."""
 
@@ -403,6 +556,8 @@ class Config:
     audio: AudioConfig = AudioConfig()
     text: TextConfig = TextConfig()
     quality: QualityConfig = QualityConfig()
+    identity: IdentityConfig = IdentityConfig()
+    generation: GenerationConfig = GenerationConfig()
     fusion: FusionConfig = FusionConfig()
 
     # ---------------------------------------------------------------- io

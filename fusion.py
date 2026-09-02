@@ -142,6 +142,17 @@ class SessionState:
         vals = [v for v in vals if isinstance(v, (int, float)) and np.isfinite(v)]
         return np.asarray(vals, dtype=float) if vals else np.asarray([])
 
+    def reset_window(self):
+        """Drop the rolling window after an interruption in capture.
+
+        Every index below is described as covering the last `window_s`
+        seconds, and the window is bounded by frame count rather than by time
+        -- so after a gap it would span the gap and still be labelled 30 s.
+        Frames already streamed to the sink are untouched: this clears what is
+        being averaged, not what was recorded.
+        """
+        self.frames.clear()
+
     def indices(self):
         """Windowed descriptive indices, each with an explicit confidence."""
         out = {}

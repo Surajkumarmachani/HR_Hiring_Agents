@@ -268,3 +268,172 @@ body.hud {
 
 .hud .sub { color: var(--hud-dim); }
 .hud a { color: var(--s-face); }
+
+/* ---- candidate record panel -------------------------------------------
+   Plain on purpose. A record panel that looks like a profile page gets read
+   like one, and this is meant to be checked, not browsed. */
+.ctx-links, .ctx-repos { list-style: none; padding: 0; margin: 10px 0 0; }
+.ctx-links li { padding: 6px 0; border-bottom: 1px solid var(--rule); }
+.ctx-links li:last-child, .ctx-repos li:last-child { border-bottom: 0; }
+.ctx-links a { text-decoration: none; font-size: 13px; }
+.ctx-links a:hover { text-decoration: underline; }
+.ctx-repos li { padding: 9px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+#whoBody .card, #whoBody .sec { margin-bottom: 12px; }
+
+/* ---- the interviewer's own camera ------------------------------------
+   Small on purpose. The panel's job is to watch the candidate and the
+   readouts; their own face is here only so they can confirm what is being
+   sent, which needs a thumbnail rather than a mirror. */
+.cam-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 10px;
+}
+.cam-row button { font-size: 11px; padding: 5px 11px; }
+.selfview {
+  position: relative; flex: 0 0 auto; width: 128px;
+  border: 1px solid var(--hud-rule); border-radius: 3px; overflow: hidden;
+  background: #000;
+}
+.selfview video {
+  width: 100%; display: block; aspect-ratio: 16 / 9; object-fit: cover;
+  transform: scaleX(-1);   /* self-view is mirrored; the sent frames are not */
+}
+.selfview .tag {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 0;
+  font-size: 9px; letter-spacing: .09em; text-transform: uppercase;
+  text-align: center; color: var(--hud-dim); background: rgba(0, 0, 0, .62);
+}
+
+/* ---- probes: written in advance vs generated for this candidate ------
+   Rendered differently on purpose. The panel has to be able to tell at a
+   glance which questions every candidate got and which were written for the
+   person in front of them -- that distinction is the whole basis on which
+   the ratings stay comparable, and a UI that blurred it would quietly undo
+   the argument in interview/generate.py. */
+.probe {
+  font-size: 12px; color: var(--hud-dim); margin: 5px 0 0;
+  padding-left: 10px; border-left: 1px solid var(--hud-rule);
+}
+.probe.gen {
+  border-left: 1px solid var(--s-script); color: var(--hud-ink);
+  background: rgba(45, 212, 191, .05); padding: 5px 10px; border-radius: 0 3px 3px 0;
+}
+.probe .tag { margin-right: 6px; }
+.probe .from {
+  display: block; margin-top: 3px; color: var(--hud-faint);
+  font-size: 11px; font-style: italic;
+}
+
+/* The difficulty band. Deliberately not styled as a primary action: it is a
+   decision about the role, taken once, not a control to reach for per
+   candidate. */
+#bandRow { gap: 8px; flex-wrap: wrap; }
+#bandRow .band { font-size: 11px; padding: 6px 13px; }
+#bandRow .band[aria-pressed="true"] {
+  border-color: var(--s-script); color: var(--s-script);
+  background: rgba(45, 212, 191, .10);
+}
+#bandRow .band:disabled { opacity: .35; cursor: not-allowed; }
+
+.note.warn { border-left-color: var(--state-warn); }
+.note.warn p { color: var(--state-warn); }
+
+/* ---- CV-derived question set -----------------------------------------
+   The interviewer may not share the candidate's background, so each question
+   carries what to listen for. That guidance is the feature, not a footnote,
+   so it gets a panel rather than a hint line. */
+.qcard h3, .sug h3 { font-size: 15.5px; line-height: 1.4; }
+.listen {
+  margin-top: 9px; padding: 9px 12px; border-radius: 3px;
+  background: var(--hud-panel-2); border-left: 2px solid var(--s-script);
+  font-size: 13px; line-height: 1.5; color: var(--hud-ink);
+}
+.listen b {
+  display: block; font-family: ui-monospace, monospace; font-size: 9.5px;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--hud-dim);
+  margin-bottom: 3px; font-weight: 600;
+}
+.listen.thin { border-left-color: var(--state-warn); }
+.qcard.asked, .sug.asked { opacity: .55; }
+.qcard.asked h3::after, .sug.asked h3::after {
+  content: " · asked"; color: var(--state-ok); font-size: 11px;
+  font-family: ui-monospace, monospace; letter-spacing: .06em;
+}
+.sug { border-left: 2px solid var(--s-script); }
+#suggestOut { display: grid; gap: 10px; margin-top: 12px; }
+
+/* ---- the operating layout ---------------------------------------------
+   The video is the thing an interviewer must not lose while reading. So the
+   left column sticks to the viewport and the working column -- suggestions,
+   CV, questions -- scrolls past it. Below 1000px there are not two usable
+   columns, so it stacks and sticky is dropped: a sticky panel on a narrow
+   screen eats the space the content needs. */
+@media (min-width: 1001px) {
+  .stagecol {
+    position: sticky;
+    top: 10px;
+    align-self: start;
+    max-height: calc(100vh - 20px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow: hidden;
+  }
+  /* The transcript takes the leftover height and scrolls inside itself, so
+     the column always fits and the feed is never pushed off screen. */
+  .stagecol > .sec {
+    flex: 1 1 auto; min-height: 0; margin-bottom: 0;
+    display: flex; flex-direction: column;
+  }
+  .stagecol .script { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .stagecol .hud-feed, .stagecol .hud-wait, .stagecol .cam-row {
+    flex: 0 0 auto;
+  }
+}
+
+/* Ask next sits at the top of the working column: it is the most
+   time-critical thing on the screen, because it is only useful in the few
+   seconds after the candidate stops talking. */
+.asknext { border-left-width: 3px; }
+.asknext .badge.live { background: rgba(45, 212, 191, .16); color: var(--s-script); }
+.asknext .badge.off { background: var(--hud-panel-2); color: var(--hud-dim); }
+.asknext .badge.thinking { background: rgba(255, 176, 32, .16); color: var(--state-warn); }
+.autotog {
+  display: inline-flex; align-items: center; gap: 7px; cursor: pointer;
+  font-size: 11px; color: var(--hud-dim);
+}
+.autotog input { accent-color: var(--s-script); width: 13px; height: 13px; }
+#suggestOut { padding: 0 11px 11px; }
+#workQuestions section { padding-top: 0; }
+#workQuestions h2 { margin-top: 18px; }
+
+/* ---- ask next, pinned ------------------------------------------------
+   The suggestion is only useful in the seconds after the candidate stops
+   talking, so it must not be something you scroll to find. It sticks to the
+   top of the working column, beside the video, which is already pinned. */
+@media (min-width: 1001px) {
+  .workcol { display: flex; flex-direction: column; gap: 0; }
+  .asknext {
+    position: sticky;
+    top: 10px;
+    z-index: 5;
+    /* Its own ground, or the questions scroll visibly underneath it. */
+    background: var(--hud-panel);
+    box-shadow: 0 10px 24px -12px rgba(0, 0, 0, .9);
+    max-height: 62vh;
+    overflow-y: auto;
+  }
+}
+/* Waiting for an answer is the normal opening state, not a fault: no alarm
+   colour, and the panel says what it is waiting for. */
+.asknext.waiting { border-left-color: var(--hud-rule); }
+.asknext.waiting #suggestOut { opacity: .45; }
+.sug.latest { border-left-width: 3px; }
+.sugold {
+  margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--hud-rule);
+}
+.sugold summary {
+  cursor: pointer; font-family: ui-monospace, monospace; font-size: 10.5px;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--hud-dim);
+}
+.sugold .probe { margin-top: 6px; }

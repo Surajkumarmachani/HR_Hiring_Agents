@@ -44,6 +44,61 @@ from datetime import datetime, timedelta, timezone
 NOTICE_VERSION = "2026.09-draft"
 NOTICE_PATH = "docs/WP7a-participant-consent-notice.md"
 
+# The interview flow needs a DIFFERENT notice, and serving the research one to
+# a candidate was a live defect: WP7a tells the reader "you are not applying
+# for a job with us" and says explicitly that interviews are a separate
+# consent problem it does not address. Both notices exist; the context picks.
+INTERVIEW_NOTICE_VERSION = "2026.09-interview-draft"
+INTERVIEW_NOTICE_PATH = "docs/WP7c-interview-consent-notice.md"
+
+# Signals a candidate is offered in an interview, in the order the notice
+# lists them. `contact_pulse_reference` is validation-only and
+# `face_identity_template` is granted by a colleague about themselves, so
+# neither belongs in a candidate flow.
+INTERVIEW_SIGNALS = (
+    "video_facial_features",
+    "upper_body_pose",
+    "pulse_rate_rppg",
+    "audio_prosody",
+    "audio_transcript",
+    "resume_question_generation",
+)
+
+
+CANDIDATE_START = "<!-- CANDIDATE-FACING:START -->"
+CANDIDATE_END = "<!-- CANDIDATE-FACING:END -->"
+
+
+def candidate_notice_text(path: str) -> str:
+    """The part of a notice file a candidate may see.
+
+    A notice file holds two things: the text for the person, and the material
+    for whoever reviews it -- draft status, the reasoning behind each choice,
+    the checklist for counsel. Serving the whole file showed a candidate all
+    of it, including a heading that says the document is not approved for use.
+
+    The digest still covers the WHOLE file, deliberately: an edit to the
+    reasoning is an edit to the notice's provenance and should invalidate the
+    consent records that cite it.
+    """
+    with open(path) as fh:
+        text = fh.read()
+    start = text.find(CANDIDATE_START)
+    end = text.find(CANDIDATE_END)
+    if start == -1 or end == -1 or end < start:
+        # No markers: this is the research notice, which is candidate-facing
+        # throughout. Returning the whole file is right there, and returning
+        # nothing would be worse than returning too much.
+        return text
+    return text[start + len(CANDIDATE_START):end].strip()
+
+
+def notice_for(context: str):
+    """(version, path) for a context. Interview and research differ."""
+    if context == "interview":
+        return INTERVIEW_NOTICE_VERSION, INTERVIEW_NOTICE_PATH
+    return NOTICE_VERSION, NOTICE_PATH
+
 # Every signal the pipeline can capture. A record must enumerate what the
 # subject agreed to; the capture loop refuses anything not on their list.
 KNOWN_SIGNALS = (
@@ -52,7 +107,23 @@ KNOWN_SIGNALS = (
     "pulse_rate_rppg",           # contactless pulse from video
     "contact_pulse_reference",   # WP8a ground truth from a chest strap / PPG
     "audio_prosody",             # WP2, not yet implemented
-    "audio_transcript",          # WP4, not yet implemented
+    "audio_transcript",          # words, via on-device ASR (signals/text.py)
+    "face_identity_template",    # enrolled-gallery recognition (signals/identity.py)
+    "resume_question_generation",
+    # The odd one out, and named separately because of it. Every other entry
+    # above is a signal CAPTURED on this machine and processed on it. This one
+    # is the reverse: it SENDS the candidate's CV and their answer transcript
+    # to a third-party model (Google's Gemini API) so an interviewer can be
+    # handed
+    # draft follow-up questions. Nothing comes back but questions -- no score,
+    # no assessment -- and nothing generated is ever rated.
+    #
+    # It is on this list so that it is refusable. A subject whose record does
+    # not name it cannot have their CV or their speech sent anywhere, and the
+    # refusal happens in the server rather than in a policy document. Which
+    # also means an operator who has not put the disclosure in their notice
+    # cannot switch this on by accident: see
+    # docs/WP7b-question-generation-processing.md.
 )
 
 REQUIRED_FIELDS = (
@@ -164,11 +235,24 @@ def load(path_or_subject, root="out", required_signals=()):
             path = candidate
         else:
             raise ConsentError(
-                f"\nREFUSING TO START: no consent record at {path_or_subject!r}.\n"
-                f"  Record one with:  python3 consent_cli.py grant --subject <id>\n"
-                f"  A pipeline that records faces and pulse without a verifiable\n"
-                f"  consent artefact is not deployable in any jurisdiction you\n"
-                f"  would want to operate in.\n")
+                f"\nREFUSING TO START: no consent record at "
+                f"{path_or_subject!r}.\n"
+                f"\n"
+                f"  Two commands, and note the second one -- a record is\n"
+                f"  written under the SUBJECT, so the run has to be pointed\n"
+                f"  at that subject rather than at the default path:\n"
+                f"\n"
+                f"    python3 consent_cli.py grant --subject dev-me \\\n"
+                f"        --context self --i-have-given-the-notice\n"
+                f"    python3 run_live.py --subject dev-me\n"
+                f"\n"
+                f"  Needing neither: `python3 run_live.py --selftest` runs the\n"
+                f"  whole signal chain on synthetic frames, with no camera and\n"
+                f"  no consent, and `--preflight` checks the install.\n"
+                f"\n"
+                f"  A pipeline that records faces and pulse without a\n"
+                f"  verifiable consent artefact is not deployable in any\n"
+                f"  jurisdiction you would want to operate in.\n")
 
     with open(path) as fh:
         rec = json.load(fh)

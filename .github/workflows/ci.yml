@@ -58,6 +58,40 @@ jobs:
       - name: Adaptive ROI selection
         run: python3 tests/test_roi.py
 
+      # Skips itself if the optional SFace weights were never fetched.
+      - name: Face identity gates (enrolled gallery)
+        run: python3 tests/test_identity.py
+
+      # No model needed: this is the record layer around the identity result.
+      - name: Candidate record panel
+        run: python3 tests/test_record.py
+
+      # The allowlist is the feature: a LinkedIn export also contains private
+      # messages, contact details and ad-targeting.
+      - name: LinkedIn export import
+        run: python3 tests/test_linkedin.py
+
+      # The relay that lets the candidate see the interviewer. Asserts the
+      # asymmetry: those frames must never reach the analyzer.
+      - name: Interviewer camera relay
+        run: python3 tests/test_presence.py
+
+      # A camera that goes off and comes back must not be measured across the
+      # gap: the buffers are bounded by sample count, not by time.
+      - name: Capture gaps
+        run: python3 tests/test_capture_gap.py
+
+      # Resume-derived questions. No API calls: the offline half is the
+      # safety filter, the consent gate, and the invariant that a generated
+      # probe never becomes a rating. The --live smoke test is opt-in.
+      - name: Generated probes stay unrated
+        run: python3 tests/test_generate.py
+
+      # Itemised consent has to be enforced by the pipeline, not just
+      # recorded. A declined signal must never be measured.
+      - name: Consent enforcement
+        run: python3 tests/test_consent_enforcement.py
+
       - name: End-to-end selftest (synthetic frames)
         run: python3 run_live.py --selftest
 

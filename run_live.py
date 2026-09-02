@@ -17,6 +17,7 @@ forfeit the interview" is duress -- is not freely given.
 """
 
 import argparse
+import signal
 import json
 import os
 import time
@@ -75,6 +76,11 @@ def main():
                          "record for the current user if none exists")
     ap.add_argument("--out", default="out/session.parquet")
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--seconds", type=float, default=None,
+                    help="stop after this many seconds and write the output. "
+                         "Needed for a HEADLESS WEBCAM run: there is no window "
+                         "to press q in and a webcam never ends by itself, so "
+                         "without this the loop never reaches the export.")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--preflight", action="store_true",
                     help="check everything the live demo needs, then exit")
@@ -206,7 +212,23 @@ def main():
           f"{' (' + args.config + ')' if args.config else ' (defaults)'}")
     print("[run] rPPG needs ~10 s of history before the first pulse estimate.")
 
+    # Ctrl-C must LEAVE the loop rather than kill the process, or the export
+    # below is never reached -- which is exactly what happened on the first
+    # headless webcam run here: 22 seconds of frames processed, no file.
+    stop = {"now": False}
+
+    def _on_sigint(_signum, _frame):
+        stop["now"] = True
+        print("\n[run] stopping, writing output...", flush=True)
+
+    signal.signal(signal.SIGINT, _on_sigint)
+
     while True:
+        if stop["now"]:
+            break
+        if args.seconds is not None and (time.time() - t0) >= args.seconds:
+            print(f"[run] reached --seconds {args.seconds:g}", flush=True)
+            break
         ok, frame = cap.read()
         if not ok:
             break

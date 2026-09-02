@@ -46,8 +46,14 @@ def main():
     for name in models.MODELS:
         try:
             p = models.ensure_model(name, allow_download=not args.verify)
-            print(f"[  ok  ] {name:<26} {os.path.getsize(p) / 1e6:>5.1f} MB verified")
+            print(f"[  ok  ] {name:<30} {os.path.getsize(p) / 1e6:>5.1f} MB verified")
         except models.ModelError as e:
+            # An optional model that was never fetched is not a failure. One
+            # that is present but wrong still is: see models.status().
+            if models.is_optional(name) and not os.path.exists(
+                    models.model_path(name)):
+                print(f"[ skip ] {name:<30} optional, not fetched")
+                continue
             failed += 1
             print(f"[ FAIL ] {name}\n{e}")
 

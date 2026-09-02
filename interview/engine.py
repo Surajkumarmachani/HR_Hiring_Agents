@@ -37,6 +37,7 @@ import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
+from config import CONFIG
 from .model import Guide, GuideError
 
 NOT_ASSESSED = "not_assessed"
@@ -77,7 +78,8 @@ class Interview:
     """One candidate, one guide, one panel."""
 
     def __init__(self, interview_id, candidate_ref, guide: Guide, panel,
-                 role=None, created_at=None, store_root="out/interviews"):
+                 role=None, created_at=None, store_root="out/interviews",
+                 cv_derived=False):
         if not panel:
             raise InterviewError("an interview needs at least one panel member")
         self.id = interview_id
@@ -86,9 +88,31 @@ class Interview:
         self.role = role or guide.role
         self.created_at = created_at or _now()
         self.store_root = store_root
+        # Whether the questions come from the CV rather than the guide. Passed
+        # in rather than read from config so an Interview built in a test or a
+        # script behaves the way that caller asked for, and so the mode is
+        # recorded on the interview itself -- a reader needs to know which
+        # kind of interview this was.
+        self.cv_derived = bool(cv_derived)
         self.panel = {pid: PanelMember(pid) for pid in panel}
         self.discussion = None
         self.decision = None
+        # Generated probes, per core question id. NOT questions and NOT
+        # rateable: ratings are made against competencies, and these exist
+        # only to get better evidence for the competencies the guide already
+        # defines. See interview/generate.py for the whole argument.
+        self.probes = {}                     # question_id -> [probe dicts]
+        self.probe_runs = []                 # provenance, one per generation
+        self.difficulty_band = None          # the band probes were asked at
+
+        # CV-DERIVED MODE. The question set is generated from this candidate's
+        # CV rather than taken from the guide, so there is nothing to show and
+        # nothing to rate until a CV has been read. The competencies and
+        # anchors still come from the guide and are identical for every
+        # candidate -- what varies is how the evidence was elicited.
+        self.generated_questions = []        # ordered, from the CV
+        self.asked = []                      # question ids, in the order asked
+        self.suggestions = []                # every live suggestion, kept
         self.events = []
         self._log("created", {"guide": guide.id, "guide_version": guide.version,
                               "guide_digest": guide.digest(),
@@ -99,9 +123,248 @@ class Interview:
         self.events.append({"at": _now(), "event": event,
                             "by": getpass.getuser(), "detail": detail or {}})
 
+    # -------------------------------------------- CV-derived question set
+    def set_questions(self, questions, meta):
+        """Install the generated question set. Once, before anyone rates.
+
+        Refused after a rating exists, because a rating is made against the
+        evidence a question produced -- replacing the questions afterwards
+        would leave a score attached to a question that was never asked.
+        """
+        rated = [pid for pid, m in self.panel.items() if m.ratings]
+        if rated:
+            raise InterviewError(
+                f"{', '.join(sorted(rated))} have already rated. Regenerating "
+                f"the questions now would leave those scores attached to "
+                f"questions that were never asked.")
+        band = meta.get("band")
+        if self.difficulty_band and band and band != self.difficulty_band:
+            raise InterviewError(
+                f"this interview was generated at {self.difficulty_band!r}; "
+                f"regenerating at {band!r} would leave the record unable to "
+                f"say which difficulty the candidate actually faced.")
+        if band:
+            self.difficulty_band = band
+
+        self.generated_questions = [dict(q) for q in questions]
+        self.probe_runs.append({**meta, "added": len(questions),
+                                "run": len(self.probe_runs)})
+        self._log("questions_generated", {
+            "source": meta.get("source"), "band": band,
+            "model_requested": meta.get("model"),
+            "model_served_by": meta.get("served_by_model"),
+            "request_id": meta.get("request_id"),
+            "count": len(questions),
+            "competencies_covered": meta.get("competencies_covered"),
+            "rejected": [r.get("reason") for r in meta.get("rejected", [])],
+            "egress": "candidate CV text sent to the Google Gemini API",
+        })
+        return len(self.generated_questions)
+
+    def ready_to_rate(self):
+        """Whether there is anything to rate yet.
+
+        In CV-derived mode a rating before any question exists would be a
+        score with no elicited evidence behind it, which is the thing the
+        anchors exist to prevent.
+        """
+        return bool(self.generated_questions)
+
+    def mark_asked(self, question_id):
+        """Record that a question was actually put to the candidate.
+
+        The generated set is a plan. What was asked is the record, and the two
+        differ whenever an interviewer skips one or takes a suggestion
+        instead -- so the summary reports the asked list, not the plan.
+        """
+        for q in self.generated_questions:
+            if q.get("id") == question_id:
+                q["asked"] = True
+                break
+        else:
+            if not any(s.get("id") == question_id for s in self.suggestions):
+                raise InterviewError(f"unknown question {question_id!r}")
+        if question_id not in self.asked:
+            self.asked.append(question_id)
+            self._log("question_asked", {"question_id": question_id})
+        return list(self.asked)
+
+    def add_suggestion(self, suggestion, meta):
+        """Keep a live suggestion, asked or not.
+
+        Kept even when ignored: the record of what an interviewer was shown
+        mid-interview is part of how the interview was conducted, and a
+        suggestion that was offered and declined is evidence of judgement
+        rather than noise.
+        """
+        entry = dict(suggestion)
+        entry["id"] = f"s{len(self.suggestions) + 1}"
+        entry["generated"] = True
+        entry["asked"] = False
+        entry["at"] = _now()
+        self.suggestions.append(entry)
+        self._log("question_suggested", {
+            "question_id": entry["id"],
+            "competency_id": entry.get("competency_id"),
+            "answer_was_thin": meta.get("answer_was_thin"),
+            "model_served_by": meta.get("served_by_model"),
+            "request_id": meta.get("request_id"),
+            "egress": "candidate answer transcript sent to the Google Gemini API",
+        })
+        return entry
+
+    def coverage(self):
+        """Which competencies the ASKED questions were aimed at.
+
+        The gap matters: a competency with no question behind it should not
+        get a score, and in CV-derived mode nothing guarantees the generated
+        set covered everything.
+        """
+        by_id = {q["id"]: q for q in self.generated_questions}
+        by_id.update({s["id"]: s for s in self.suggestions})
+        hit = {by_id[qid].get("competency_id") for qid in self.asked
+               if qid in by_id}
+        return {c.id: (c.id in hit) for c in self.guide.competencies}
+
+    # ------------------------------------------------ generated probes
+    def add_probes(self, probes, meta):
+        """Attach generated probes to their core questions.
+
+        Refuses once anybody has locked. A probe arriving after a rater has
+        committed could not have informed that rating, so accepting it would
+        put a question in the record that looks like it shaped a score it
+        never saw -- and if the panel then asked it, the rating would be
+        locked against an interview that had since changed.
+
+        The difficulty band is recorded on the interview the first time
+        probes are generated, and cannot then be changed. Regenerating at a
+        different band mid-interview would leave no answer to "at what
+        difficulty was this candidate probed", which is the question
+        comparability turns on.
+        """
+        locked = [pid for pid, m in self.panel.items() if m.is_locked()]
+        if locked:
+            raise InterviewError(
+                f"{', '.join(sorted(locked))} already locked. Probes "
+                f"generated now could not have informed a locked rating.")
+
+        band = meta.get("band")
+        if self.difficulty_band and band and band != self.difficulty_band:
+            raise InterviewError(
+                f"this interview was already probed at "
+                f"{self.difficulty_band!r}; regenerating at {band!r} would "
+                f"leave the record unable to say which difficulty the "
+                f"candidate actually faced. Start a new interview to change "
+                f"the band.")
+        if band:
+            self.difficulty_band = band
+
+        known = {q.id for q in self.guide.questions}
+        added = 0
+        for probe in probes:
+            qid = probe.get("question_id")
+            if qid not in known:
+                continue
+            entry = dict(probe)
+            entry["generated"] = True
+            entry["rated"] = False          # stated in the record, not implied
+            entry["run"] = len(self.probe_runs)
+            self.probes.setdefault(qid, []).append(entry)
+            added += 1
+
+        self.probe_runs.append({**meta, "added": added,
+                                "run": len(self.probe_runs)})
+        self._log("probes_generated", {
+            "source": meta.get("source"), "band": band,
+            # Requested vs served: an audit needs to know a fallback or a
+            # routing change happened, and `model` alone cannot say.
+            "model_requested": meta.get("model"),
+            "model_served_by": meta.get("served_by_model"),
+            "request_id": meta.get("request_id"),
+            "added": added,
+            "returned": meta.get("returned"), "kept": meta.get("kept"),
+            "rejected": [r.get("reason") for r in meta.get("rejected", [])],
+            "resume_redactions": meta.get("redactions"),
+            "resume_truncated": meta.get("truncated"),
+            # Written into the audit trail because it is the one operation in
+            # this system that sent candidate data to a third party.
+            "egress": ("candidate CV text sent to the Google Gemini API"
+                       if meta.get("source") == "resume" else
+                       "candidate answer transcript sent to the Google Gemini API"),
+        })
+        return added
+
+    def probes_for(self, question_id):
+        """Hand-written probes from the guide, then generated ones."""
+        q = next((q for q in self.guide.questions if q.id == question_id), None)
+        fixed = [{"text": t, "generated": False, "rated": False}
+                 for t in (q.probes if q else [])]
+        return fixed + list(self.probes.get(question_id, []))
+
+    def comparability_warning(self):
+        """Whether this candidate was probed differently from their peers.
+
+        The hole that generated probes open is not the anchors -- those stay
+        fixed -- it is difficulty. Evidence gathered under "super hard"
+        probing and evidence gathered under "easy" probing are not equivalent
+        inputs to the same 1-5 scale, however identical the scale.
+
+        This reads the sibling interviews stored under the same guide and
+        reports the bands in use. It cannot prevent divergence, and it does
+        not try: it makes it visible in the summary, where whoever compares
+        two candidates will see it.
+        """
+        mine = self.difficulty_band
+        if not mine:
+            return None
+        others = {}
+        root = self.store_root
+        if not os.path.isdir(root):
+            return None
+        for name in sorted(os.listdir(root)):
+            if name == self.id:
+                continue
+            path = os.path.join(root, name, "interview.json")
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path) as fh:
+                    d = json.load(fh)
+            except Exception:
+                continue
+            if d.get("guide", {}).get("id") != self.guide.id:
+                continue
+            band = d.get("difficulty_band")
+            if band:
+                others.setdefault(band, []).append(name)
+        divergent = {b: ids for b, ids in others.items() if b != mine}
+        if not divergent:
+            return None
+        return {
+            "this_interview": mine,
+            "other_bands": divergent,
+            "warning": (
+                f"this candidate was probed at {mine!r} while other "
+                f"candidates on guide {self.guide.id!r} were probed at "
+                f"{', '.join(sorted(divergent))}. The competencies and "
+                f"anchors are the same, but the evidence behind these scores "
+                f"was gathered under different difficulty, so the scores are "
+                f"not directly comparable. The band is a property of the "
+                f"role and should be fixed before candidates are seen."),
+        }
+
     # ------------------------------------------------------------ rating
     def rate(self, interviewer_id, competency_id, score, evidence):
         """Record one rating. Refuses after that interviewer has locked."""
+        # In CV-derived mode there is nothing to rate until a question set
+        # exists. Enforced here rather than by hiding the controls: a rating
+        # made before any question was asked is a score with no elicited
+        # evidence, which is exactly what the anchors exist to prevent.
+        if self.cv_derived and not self.ready_to_rate():
+            raise InterviewError(
+                "no questions have been generated for this candidate yet, so "
+                "there is nothing to rate. Upload their CV and generate the "
+                "interview first.")
         m = self._member(interviewer_id)
         if m.is_locked():
             raise InterviewError(
@@ -277,6 +540,49 @@ class Interview:
             "note": ("Weighted mean of competency ratings. It is an input to "
                      "a human decision, not the decision, and it is not a "
                      "hire threshold."),
+            # Generated probes never carry a score, so they cannot appear in
+            # `rows`. They appear here instead, because a summary that showed
+            # no trace of them would let a reader assume every candidate was
+            # asked the same thing -- which is true of the FIXED questions and
+            # not of these.
+            "generated_probes": {
+                "used": bool(self.probes),
+                "count": sum(len(v) for v in self.probes.values()),
+                "difficulty_band": self.difficulty_band,
+                "runs": [{"source": r.get("source"), "band": r.get("band"),
+                          "model": r.get("model"), "added": r.get("added"),
+                          "generated_at": r.get("generated_at")}
+                         for r in self.probe_runs],
+                "note": ("Extra follow-up questions, generated for this "
+                         "candidate and asked at the interviewer's "
+                         "discretion. They carry no score: every rating "
+                         "above is against the guide's competencies and "
+                         "anchors, identical for every candidate. The fixed "
+                         "questions were asked of everyone in the same "
+                         "order."),
+            },
+            "comparability": self.comparability_warning(),
+            # In CV-derived mode the question set came from this candidate's
+            # CV, so a reader has to be able to see what was actually asked
+            # and which competencies nothing was asked about.
+            "question_set": ({
+                "source": "generated from the candidate's CV",
+                "difficulty_band": self.difficulty_band,
+                "generated": len(self.generated_questions),
+                "asked": len(self.asked),
+                "suggestions_offered": len(self.suggestions),
+                "suggestions_asked": sum(1 for s in self.suggestions
+                                         if s.get("asked")),
+                "coverage": self.coverage(),
+                "uncovered": [c for c, hit in self.coverage().items()
+                              if not hit],
+                "note": ("Questions were generated for this candidate and "
+                         "differ from those asked of others. The "
+                         "competencies and anchors above are the same for "
+                         "every candidate for this role. A competency listed "
+                         "under `uncovered` had no question aimed at it, so "
+                         "any score against it rests on incidental evidence."),
+            } if self.generated_questions else None),
         }
 
     # ---------------------------------------------------------- decision
@@ -325,6 +631,17 @@ class Interview:
                       for pid, m in self.panel.items()},
             "discussion": self.discussion,
             "decision": self.decision,
+            # Recorded so the file can answer "what was this candidate asked,
+            # beyond the fixed set, and at what difficulty" without needing
+            # the API or the CV that produced it.
+            "difficulty_band": self.difficulty_band,
+            "cv_derived": self.cv_derived,
+            "generated_questions": self.generated_questions,
+            "asked": self.asked,
+            "suggestions": self.suggestions,
+            "coverage": self.coverage(),
+            "generated_probes": self.probes,
+            "probe_runs": self.probe_runs,
             "events": self.events,
         }
 
@@ -362,4 +679,11 @@ class Interview:
                 m.ratings[cid] = Rating(**r)
         iv.discussion = d.get("discussion")
         iv.decision = d.get("decision")
+        iv.probes = d.get("generated_probes", {})
+        iv.probe_runs = d.get("probe_runs", [])
+        iv.difficulty_band = d.get("difficulty_band")
+        iv.cv_derived = d.get("cv_derived", False)
+        iv.generated_questions = d.get("generated_questions", [])
+        iv.asked = d.get("asked", [])
+        iv.suggestions = d.get("suggestions", [])
         return iv

@@ -19,6 +19,19 @@ praat-parselmouth>=0.4    # WP2: jitter, shimmer, HNR, F0 (Praat algorithms)
                           # algorithms, so a reimplementation would not be
                           # comparable to the phonetics literature.
 
+google-genai>=2.0            # WP7b: resume-derived interview questions via
+                             # Gemini. Selected by config.generation.provider,
+                             # which is currently "gemini".
+                             # THE ONLY THIRD-PARTY SERVICE IN THIS PROJECT.
+                             # Everything else is local by construction and by
+                             # argument -- see docs/WP7b-question-generation-
+                             # processing.md for what leaves the machine, and
+                             # config.generation.enabled = False to remove the
+                             # feature and the egress with it.
+pypdf>=4.0                   # CV text extraction. No OCR: a scanned PDF is
+                             # refused rather than read as an empty string.
+python-docx>=1.1             # the other half of what candidates actually send
+
 # --- Optional, add as you reach the relevant phase -----------------------
 # py-feat>=0.6            # FACS-trained AU intensities (offline, ~2-8 fps)
 # openface-test           # OpenFace 3.0: 8 emotions, gaze, AUs (GPU)

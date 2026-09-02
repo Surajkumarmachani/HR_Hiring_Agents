@@ -43,6 +43,13 @@
       blank only for local testing — a link that works the moment it is sent
       works at 3am for whoever it was forwarded to.</p>
 
+    <label class="agree" style="display:flex;gap:9px;align-items:flex-start;margin-top:16px">
+      <input type="checkbox" id="ident">
+      <span>Identify the candidate against the enrolled gallery
+        <span class="hint">— only resolves people who enrolled themselves on
+        this machine. Off by default.</span></span>
+    </label>
+
     <label for="policy">Region policy for signal capture</label>
     <select id="policy">
       <option value="strict">strict — withhold capture when region is unknown</option>
@@ -89,6 +96,7 @@ $("#go").onclick = async () => {
     panel: $("#panel").value.split(",").map(s => s.trim()).filter(Boolean),
     guide: $("#guide").value.trim(),
     region_policy: $("#policy").value,
+    identify_candidate: $("#ident").checked,
     // Sent with the browser's offset, so the server stores a real instant
     // rather than a wall-clock time that means something else to a candidate
     // in another country.

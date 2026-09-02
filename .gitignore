@@ -26,6 +26,15 @@ out/interviews/
 *.m4a
 
 # ---------------------------------------------------------------------------
+# Secrets. A committed API key is a key that has to be rotated, and git
+# history makes removing it a rewrite rather than a deletion. `.env.example`
+# is tracked deliberately -- it holds placeholders and documents the names.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
 # Environment
 # ---------------------------------------------------------------------------
 .venv/
@@ -61,3 +70,4 @@ vendor/
 #   out/parameters.csv     generated parameter catalogue, no personal data
 #   out/interview-parameters.xlsx
 # ---------------------------------------------------------------------------
+models/face_recognition_sface.onnx

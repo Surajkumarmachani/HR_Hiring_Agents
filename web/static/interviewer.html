@@ -12,12 +12,21 @@
   <div id="lockstate"></div>
 
   <div class="hud-grid">
-    <div>
+    <div class="stagecol">
       <div class="hud-wait" id="noFeed">awaiting candidate</div>
       <div class="hud-feed" id="feedWrap" hidden>
         <img id="feed" alt="Live view of the candidate">
         <span class="corner tl"></span><span class="corner tr"></span>
         <span class="corner bl"></span><span class="corner br"></span>
+      </div>
+      <div class="cam-row">
+        <div class="selfview" id="selfWrap" hidden>
+          <video id="selfView" autoplay muted playsinline></video>
+          <span class="tag">they see this</span>
+        </div>
+        <button class="ghost" id="camBtn">Turn on my camera</button>
+        <span class="hint" id="camMsg">The candidate is looking at a blank
+          panel until you do, while being visible themselves.</span>
       </div>
       <div class="sec" style="--sec: var(--s-script); margin-top:12px">
         <header>transcript
@@ -33,6 +42,32 @@
         </div>
       </div>
     </div>
+    <!-- The working column. Everything the interviewer reads WHILE the
+         candidate is talking lives here, beside the video rather than below
+         it: the live suggestion first, because it is the most time-critical
+         thing on the screen, then the CV control, then the question set. -->
+    <div class="workcol">
+      <div class="sec asknext" id="suggestsec" hidden
+           style="--sec: var(--s-script)">
+        <header>ask next
+          <span class="badge" id="autoBadge">auto</span></header>
+        <div class="mic-row">
+          <button class="ghost" id="suggestBtn">Suggest now</button>
+          <label class="autotog"><input type="checkbox" id="autoSuggest" checked>
+            <span>suggest automatically when they finish answering</span></label>
+        </div>
+        <p class="hint" id="suggestMsg" style="padding:0 11px 8px">Available
+          once they have answered something.</p>
+        <div id="suggestOut"></div>
+      </div>
+
+      <div id="workQuestions"></div>
+    </div>
+  </div>
+
+  <section id="metricssec"><h2>Live read</h2>
+    <div class="note"><p id="advisory">Descriptive measurements. Not a score,
+      and not an input to one.</p></div>
     <div id="metrics">
       <div class="sec" style="--sec: var(--s-session)">
         <header>session</header>
@@ -40,13 +75,45 @@
           <span class="fill"></span><span class="v none">no signal yet</span></div></div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <div class="note" style="margin-top:14px"><p id="advisory">Descriptive
-    measurements. Not a score, and not an input to one.</p></div>
+  <section id="whosec" hidden><h2>Candidate record</h2>
+    <p class="sub">Resolved from the locally enrolled gallery. Nothing is
+      searched for online.</p>
+    <div class="row" style="margin-bottom:12px">
+      <button class="ghost" id="whoBtn">Show record</button>
+      <span class="hint" id="whoMsg">Opening this is recorded against the
+        interview, with whether you had already locked.</span>
+    </div>
+    <div id="whoBody" hidden></div>
+  </section>
 
-  <section id="questions"><h2>Questions</h2>
-    <p class="sub">Ask all of them, in this order, for every candidate.</p>
+  <section id="questions"><h2 id="qhead">Questions</h2>
+    <p class="sub" id="qsub">Generated from this candidate's CV.</p>
+
+    <div class="card" id="gencard" hidden>
+      <h3>Build the interview from the candidate's CV</h3>
+      <p>The questions are written from what this CV actually claims. Each one
+         comes with <em>what to listen for</em> — so you can tell a deep answer
+         from a fluent one even outside your own field — and the one follow-up
+         to use if the answer stays shallow.</p>
+      <p>What you <em>rate</em> does not come from the CV: the competencies and
+         their anchors are fixed and identical for every candidate for this
+         role. The questions differ; the scale does not.</p>
+      <div class="row">
+        <input type="file" id="cvFile" accept=".pdf,.docx,.txt,.md">
+        <button class="ghost" id="cvUpload">Upload CV</button>
+        <span class="hint" id="cvMsg"></span>
+      </div>
+      <p class="hint" id="bandNote">Pick the depth. Set this from the
+        <em>role</em>, before you read the CV — choosing it per candidate is
+        how an impression of someone becomes their difficulty, and then their
+        score.</p>
+      <div class="row" id="bandRow"></div>
+      <span class="err" id="genErr"></span>
+      <div id="genOut"></div>
+    </div>
+
     <div id="qlist"></div></section>
 
   <section id="rating"><h2>Ratings</h2>
@@ -55,15 +122,14 @@
     <div id="clist"></div>
     <div class="card">
       <h3>Lock your ratings</h3>
-      <p>Locking makes them final. Only once <em>every</em> interviewer has locked
-         does anyone see anyone else's scores. That independence is what keeps the
-         panel from converging on the first opinion voiced.</p>
+      <p id="lockWhy">Locking makes them final.</p>
       <div class="row"><button id="lock">Lock my ratings</button>
         <span id="lockErr" class="err"></span></div>
     </div>
   </section>
 
-  <section id="panel" hidden><h2>Panel</h2><div id="summary"></div></section>
+  <section id="panel" hidden><h2 id="panelHead">Panel</h2>
+    <div id="summary"></div></section>
 </div>
 <script>
 const $ = s => document.querySelector(s);
@@ -85,11 +151,8 @@ async function load() {
     ` · you are ${WHO} · guide ${S.guide.id} v${S.guide.version}`;
   if (S.candidate_name) $("#title").textContent = `${S.role} — ${S.candidate_name}`;
 
-  $("#qlist").innerHTML = S.questions.map((q,i) => `
-    <div class="card"><h3>${i+1}. ${esc(q.text)}</h3>
-      <p class="hint">rates: ${q.competencies.join(", ")}</p>
-      ${q.probes.map(p => `<p class="hint">probe: ${esc(p)}</p>`).join("")}
-    </div>`).join("");
+  renderPhase();
+  renderGeneration();
 
   $("#clist").innerHTML = S.competencies.map(c => {
     const mine = S.my_ratings[c.id] || {};
@@ -122,25 +185,192 @@ async function load() {
     card.querySelector("[data-save]").onclick = () => save(card);
   });
 
+  if (S.identify_candidate) $("#whosec").hidden = false;
+
   renderLock();
   if (S.all_locked) showPanel();
 }
 
+// ------------------------------------------------------- candidate record
+// Fetched on demand. The request is what gets logged, so firing it on page
+// load would record every interviewer as having read the candidate's history
+// whether they looked or not — and that log is meant to mean something.
+$("#whoBtn").onclick = async () => {
+  const body = $("#whoBody");
+  if (!body.hidden) {
+    body.hidden = true; $("#whoBtn").textContent = "Show record"; return;
+  }
+  $("#whoBtn").textContent = "Hide record";
+  body.hidden = false;
+  body.innerHTML = `<p class="hint">resolving…</p>`;
+
+  const r = await fetch(
+    `/api/sessions/${SID}/who?who=${WHO}&t=${encodeURIComponent(T)}`);
+  const d = await r.json();
+  if (!r.ok) { body.innerHTML = `<p class="err">${esc(d.detail || "unavailable")}</p>`; return; }
+  body.innerHTML = renderWho(d);
+};
+
+function renderWho(d) {
+  if (!d.enabled)
+    return `<p class="hint">${esc(d.reason)}</p>`;
+  if (d.status === "resolving")
+    return `<p class="hint">${esc(d.reason)}. The candidate needs to be on
+      camera for a few seconds.</p>`;
+
+  const head = `<div class="card"><h3>Identity
+      <span class="tag">${esc(d.status)}</span></h3>
+    <p class="hint">score ${d.score ?? "—"} · margin ${d.margin ?? "—"}
+      · gallery of ${d.gallery_size ?? "—"}</p></div>`;
+
+  if (!d.record)
+    return head + `<div class="note warn"><p>${esc(d.reason ||
+      "The gallery could not place this face.")}</p>
+      <p>No record is shown. Showing the nearest guess is how the wrong
+      person's history reaches a panel.</p></div>`;
+
+  const rec = d.record;
+  if (!rec.available)
+    return head + `<div class="note warn"><p>${esc(rec.reason)}</p></div>`;
+
+  const c = rec.consent || {};
+  const h = rec.history || {};
+  const row = (k, v) => `<div class="rw"><span class="k">${esc(k)}</span>
+    <span class="fill"></span><span class="v">${esc(v ?? "—")}</span></div>`;
+
+  let html = head + `<div class="card">
+    <h3>${esc(rec.display_name || rec.subject_id)}
+      <span class="tag">${esc(rec.subject_id)}</span></h3>
+    ${rec.headline ? `<p>${esc(rec.headline)}</p>` : ""}
+    ${(rec.links || []).length ? `<ul class="ctx-links">${rec.links.map(l =>
+      `<li><a href="${esc(l.url)}" target="_blank"
+        rel="noopener noreferrer nofollow"><span class="tag">${esc(l.label)}</span>
+        ${esc(l.url.replace(/^https?:\/\//, ""))}</a></li>`).join("")}</ul>`
+      : `<p class="hint">No links attached to this enrolment.</p>`}
+    <p class="hint">${esc(rec.source)}.</p></div>`;
+
+  const li = rec.linkedin;
+  if (li) {
+    html += `<div class="card"><h3>LinkedIn
+        <span class="tag">member export</span></h3>
+      ${li.headline ? `<p>${esc(li.headline)}</p>` : ""}
+      ${li.summary ? `<p class="hint">${esc(li.summary)}</p>` : ""}
+      ${(li.positions || []).length ? `<ul class="ctx-repos">${
+        li.positions.map(p => `<li><b>${esc(p.title || "")}</b>
+          — ${esc(p.company || "")}
+          <br><span class="hint">${esc(p.started || "")}${
+            p.finished ? " – " + esc(p.finished) : " – present"}${
+            p.location ? " · " + esc(p.location) : ""}</span>
+          ${p.description ? `<br><span class="desc">${esc(p.description)}</span>` : ""}
+        </li>`).join("")}</ul>` : ""}
+      ${(li.education || []).length ? `<p class="hint">${li.education.map(e =>
+        esc([e.degree, e.school, e.finished].filter(Boolean).join(", "))
+        ).join(" · ")}</p>` : ""}
+      ${(li.skills || []).length ? `<p class="hint">skills: ${
+        li.skills.slice(0, 12).map(esc).join(", ")}</p>` : ""}
+      <p class="hint">${esc(li._advisory || "")}</p></div>`;
+  }
+
+  const gh = rec.github;
+  if (gh && !gh.error) {
+    html += `<div class="card"><h3>GitHub
+        <span class="tag">@${esc(gh.handle)}</span></h3>
+      ${[gh.name, gh.company, gh.location].filter(Boolean).length
+        ? `<p>${[gh.name, gh.company, gh.location].filter(Boolean).map(esc).join(" · ")}</p>` : ""}
+      ${gh.bio ? `<p>${esc(gh.bio)}</p>` : ""}
+      <p class="hint">${gh.public_repos} public repos · joined ${esc(gh.created_at)}${
+        (gh.languages || []).length ? " · " + gh.languages.map(esc).join(", ") : ""}</p>
+      ${(gh.repos || []).length ? `<ul class="ctx-repos">${gh.repos.map(r => `
+        <li><a href="${esc(r.url)}" target="_blank" rel="noopener noreferrer">${esc(r.name)}</a>
+          ${r.language ? `<span class="tag">${esc(r.language)}</span>` : ""}
+          ${r.fork ? `<span class="tag">fork</span>` : ""}
+          ${r.description ? `<br><span class="desc">${esc(r.description)}</span>` : ""}
+          <br><span class="hint">pushed ${esc(r.pushed_at)}</span></li>`).join("")}</ul>`
+        : `<p class="hint">No public repositories.</p>`}
+      <p class="hint">${esc(gh._advisory || "")}</p></div>`;
+  } else if (gh && gh.error) {
+    html += `<div class="card"><h3>GitHub</h3><p class="hint">${esc(gh.error)}</p>
+      <p class="hint">A failure to reach GitHub, not a fact about them.</p></div>`;
+  }
+
+  html += `<div class="sec" style="--sec: var(--s-session)">
+    <header>consent</header><div class="rows">
+    ${row("context", c.context)}${row("purpose", c.purpose)}
+    ${row("granted", (c.granted_at || "").slice(0, 10))}
+    ${row("expires", (c.expires_at || "").slice(0, 10))}
+    ${row("decisional use", String(c.decisional_use))}
+    ${row("signals", (c.signals || []).length + " consented")}
+    </div></div>`;
+
+  const sess = h.sessions || [], ivs = h.interviews || [];
+  html += `<div class="card"><h3>On this machine</h3>
+    <p class="hint">${sess.length} session${sess.length === 1 ? "" : "s"},
+      ${ivs.length} interview${ivs.length === 1 ? "" : "s"}</p>
+    ${ivs.length ? `<ul class="ctx-repos">${ivs.slice(0, 6).map(i => `
+      <li>${esc(i.interview_id)} — ${esc(i.role || "")}
+        ${i.decision ? `<span class="tag">${esc(i.decision)}</span>` : ""}
+        <br><span class="hint">${esc((i.created_at || "").slice(0, 10))}
+        · panel ${esc((i.panel || []).join(", "))}
+        · ${(i.locked || []).length}/${(i.panel || []).length} locked</span></li>`
+      ).join("")}</ul>` : ""}
+  </div>`;
+
+  html += `<div class="note warn"><p>${esc(rec.advisory)}
+    ${d.viewed_after_lock ? "You had already locked when you opened this."
+      : "You have not locked yet — this is recorded."}</p></div>`;
+  return html;
+}
+
+// A one-person panel is a normal interview, not a blocked one: nothing here
+// waits on anybody, and the summary appears the moment they lock. The old copy
+// said "you cannot see anyone else's until you and the panel have locked",
+// which described a constraint that does not exist when there is nobody else
+// — so it read as a warning that the interview could not proceed.
+//
+// The independence rule is real and stays for a multi-person panel. It just
+// has nothing to protect when there is one rater, and claiming otherwise
+// makes the page look broken.
 function renderLock() {
   const el = $("#lockstate");
+  const solo = (S.panel || []).length < 2;
+  const others = (S.pending || []).filter(p => p !== WHO);
+  const list = a => a.map(esc).join(", ");
+
+  $("#lockWhy").innerHTML = solo
+    ? `Locking makes them final. You are the only interviewer, so nothing is
+       being sealed from anyone — what it does is timestamp your scores
+       <em>before</em> any decision is recorded, so the record can show what
+       you judged and when, separately from what was decided afterwards.`
+    : `Locking makes them final. Only once <em>every</em> interviewer has
+       locked does anyone see anyone else's scores. That independence is what
+       keeps the panel from converging on the first opinion voiced.`;
+
   if (S.locked) {
     el.innerHTML = S.all_locked
       ? `<div class="note ok"><p>You locked at ${S.locked_at.slice(0,19)}.
-          Every interviewer has locked — the panel view is below.</p></div>`
+          ${solo ? "Your summary is below."
+                 : "Every interviewer has locked — the panel view is below."}
+          </p></div>`
       : `<div class="note"><p>You locked at ${S.locked_at.slice(0,19)}.
-          Waiting for: <strong>${S.pending.join(", ")}</strong>.
+          Waiting for: <strong>${list(S.pending)}</strong>.
           Their ratings stay sealed until then.</p></div>`;
     document.querySelectorAll("#rating button, #rating textarea")
       .forEach(b => b.disabled = true);
-  } else {
+  } else if (solo) {
+    // Not a warning. Nothing is wrong and nothing is waiting.
+    el.innerHTML = `<div class="note"><p>You are the only interviewer on this
+      interview. Rate against the anchors, then lock — your summary appears as
+      soon as you do.</p></div>`;
+  } else if (others.length) {
     el.innerHTML = `<div class="note warn"><p>Your ratings are not locked yet.
-      You cannot see anyone else's until you and
-      ${S.pending.filter(p => p !== WHO).length ? "the rest of the panel" : "the panel"} have locked.</p></div>`;
+      Neither have <strong>${list(others)}</strong> — nobody sees anyone
+      else's scores until everyone has locked.</p></div>`;
+  } else {
+    // The genuinely useful version of the old message: everyone else is done
+    // and the interview is waiting on this person specifically.
+    el.innerHTML = `<div class="note warn"><p>Your ratings are not locked yet,
+      and everyone else on the panel has locked. Their scores stay sealed
+      until you do — the interview is waiting on you.</p></div>`;
   }
 }
 
@@ -170,6 +400,8 @@ $("#lock").onclick = async () => {
 };
 
 async function showPanel() {
+  // "Panel" is the wrong word for one person looking at their own scores.
+  if ((S.panel || []).length < 2) $("#panelHead").textContent = "Your ratings";
   const r = await fetch(`/api/sessions/${SID}/summary?who=${WHO}&t=${encodeURIComponent(T)}`);
   if (!r.ok) return;
   const d = await r.json();
@@ -227,11 +459,18 @@ function connectLive() {
       $("#feed").src = next;
       if (url) URL.revokeObjectURL(url);
       url = next;
+      armStaleness();
       return;
     }
     try { renderMetrics(JSON.parse(e.data)); } catch (_) {}
   };
-  ws.onclose = () => { setLive(false); setTimeout(connectLive, 3000); };
+  ws.onclose = () => {
+    // This end of the connection went. The readouts describe a candidate this
+    // page can no longer see, so they go with it rather than sitting there
+    // looking current.
+    blankPanel("connection to the session lost");
+    setTimeout(connectLive, 3000);
+  };
   setInterval(() => ws.readyState === 1 && ws.send("ping"), 20000);
 }
 
@@ -260,16 +499,29 @@ function rw(k, v, state) {
 function renderMetrics(d) {
   if (d.error) return;
   if (d.type === "transcript") return renderTranscript(d);
+  if (d.type === "capture") {
+    if (!d.camera) return blankPanel(d.reason);
+    // Back on. The next frame unhides the feed; until one arrives there is
+    // still nothing to show, so nothing is claimed here.
+    $("#noFeed").textContent = "camera on, waiting for frames";
+    return;
+  }
   setLive(true, `${d.effective_fps} fps · t+${Math.floor(d.t)}s`);
 
   const out = [];
 
   // session
+  // Null means "not being captured", which is not the same as zero. A blanked
+  // panel showing "frames 0" reads as a session that captured nothing, when
+  // what happened is that a session which captured plenty has stopped.
   out.push(sec("session", "--s-session",
-    rw("elapsed", Math.floor(d.t) + " s") +
+    rw("elapsed", d.t != null ? Math.floor(d.t) + " s" : null) +
     rw("frames", d.frames) +
-    rw("stream rate", d.effective_fps + " fps", d.effective_fps < 8 ? "warn" : "") +
-    rw("face visible", d.face_visibility, d.face_visibility < 0.6 ? "crit" : "ok")));
+    rw("stream rate", d.effective_fps != null ? d.effective_fps + " fps" : null,
+       d.effective_fps != null && d.effective_fps < 8 ? "warn" : "") +
+    rw("face visible", d.face_visibility,
+       d.face_visibility == null ? ""
+       : (d.face_visibility < 0.6 ? "crit" : "ok"))));
 
   // pulse, with the headline read
   const p = d.pulse || {};
@@ -296,7 +548,8 @@ function renderMetrics(d) {
   out.push(sec("face", "--s-face",
     rw("active AUs", d.face.active_aus) +
     rw("AU sum", d.face.au_sum) +
-    rw("yaw / pitch / roll", d.face.head.join(" / ")) +
+    rw("yaw / pitch / roll",
+       d.face.head.length ? d.face.head.join(" / ") : null) +
     rw("head motion", d.face.head_motion) +
     rw("smile duchenne", d.face.smile_duchenne) +
     rw("smile social", d.face.smile_social)));
@@ -340,6 +593,432 @@ function renderMetrics(d) {
   if (d.advisory) $("#advisory").textContent = d.advisory;
 }
 
+// ---- when there is nothing to measure --------------------------------
+// A frozen last frame beside a full set of readouts is the worst thing this
+// panel can show: it looks exactly like a candidate holding still, and every
+// number beside it is a measurement of a moment that has passed. So the
+// picture and the readouts are blanked together, and the panel says which of
+// the two reasons it was.
+//
+// Every section keeps its shape with an em dash in place of each value,
+// rather than the sections disappearing. The panel is a fixed instrument --
+// the reading is absent, not the instrument.
+const BLANK = {
+  // Null throughout rather than zero: nothing here is a measurement of zero,
+  // it is the absence of a measurement. `body` is an empty object rather than
+  // null because null is reserved for "the body analyzer is not available",
+  // which is a different statement and carries a warning chip.
+  t: null, frames: null, effective_fps: null, face_visibility: null,
+  pulse: {status: "no capture"},
+  face: {head: []}, gaze: {}, blink: {}, body: {}, quality: {},
+  top_aus: [],
+  advisory: "Capture has stopped. Nothing is being measured.",
+};
+
+let staleTimer = null;
+
+// Frames stopping WITHOUT a camera-off message means the candidate's
+// connection went, their tab closed, or their machine slept. None of those
+// send anything, so the panel cannot wait to be told.
+function armStaleness() {
+  clearTimeout(staleTimer);
+  staleTimer = setTimeout(() => blankPanel(
+    "no frames arriving \u2014 the candidate's connection may have dropped"), 4000);
+}
+
+function blankPanel(reason) {
+  clearTimeout(staleTimer);
+  $("#feedWrap").hidden = true;
+  $("#feed").removeAttribute("src");
+  $("#noFeed").hidden = false;
+  $("#noFeed").textContent = reason;
+  renderMetrics(BLANK);
+  setLive(false);            // after renderMetrics, which sets it live
+}
+
+// ---- questions, and the probes attached to them ----------------------
+// A probe written before any candidate was seen and a probe generated from
+// this candidate's CV are different objects with different standing, so they
+// are never rendered to look the same. The generated ones carry the band they
+// were written at and the CV claim they came from, because a probe you cannot
+// trace is a probe you should not ask.
+// ---- CV-derived mode -------------------------------------------------
+// Nothing is shown and nothing can be rated until a CV has produced a
+// question set. The phases are: cv (no CV yet) -> generate (CV read, no
+// questions) -> questions (ready).
+function renderPhase() {
+  const phase = S.phase || "cv";
+  const ready = !!S.ready_to_rate;
+
+  // Everything scrollable is moved into the working column, once, at first
+  // render. Not just for layout: a sticky element is bounded by its own
+  // container, so with the ratings and the live read left outside the grid
+  // the video came unpinned as soon as you scrolled past it -- measured at
+  // 900px. Inside the column, the grid spans the whole page and the video
+  // holds for the entire scroll.
+  //
+  // Moving the nodes rather than duplicating the markup keeps one set of ids
+  // and one set of event handlers.
+  const col = document.querySelector(".workcol");
+  const slot = $("#workQuestions");
+  const qs = $("#questions");
+  if (qs && slot && qs.parentElement !== slot) slot.appendChild(qs);
+  for (const sel of ["#rating", "#metricssec", "#whosec", "#panel"]) {
+    const el = document.querySelector(sel);
+    if (el && col && el.parentElement !== col) col.appendChild(el);
+  }
+
+  $("#rating").hidden = !ready;
+  $("#suggestsec").hidden = phase !== "questions";
+  if (phase !== "questions") $("#qlist").innerHTML = "";
+
+  if (phase === "cv") {
+    $("#qsub").textContent = "Upload the candidate's CV to build the interview.";
+  } else if (phase === "generate") {
+    $("#qsub").textContent = "CV read. Pick the depth to build the interview.";
+  }
+  if (phase === "questions") renderGenerated();
+  renderSuggestions();
+}
+
+// The generated set, in the order it should be asked. Each question carries
+// what to listen for, because the point of this mode is that an interviewer
+// who does not share the candidate's background can still tell a deep answer
+// from a fluent one.
+function renderGenerated() {
+  const asked = new Set(S.asked || []);
+  $("#qlist").innerHTML = (S.generated_questions || []).map((q, i) => `
+    <div class="card qcard${asked.has(q.id) ? " asked" : ""}" data-q="${q.id}">
+      <h3>${i + 1}. ${esc(q.text)}</h3>
+      <p class="hint">evidence for: ${esc(q.competency_id)}${
+        q.grounded_in ? ` &middot; from the CV: ${esc(q.grounded_in)}` : ""}</p>
+      <div class="listen"><b>Listen for</b>${esc(q.listen_for || "")}</div>
+      ${q.if_thin ? `<div class="listen thin"><b>If the answer stays shallow</b>${
+        esc(q.if_thin)}</div>` : ""}
+      <div class="row">
+        <button class="ghost mark" data-q="${q.id}" ${
+          asked.has(q.id) ? "disabled" : ""}>${
+          asked.has(q.id) ? "Asked" : "Mark as asked"}</button>
+      </div>
+    </div>`).join("");
+  document.querySelectorAll("#qlist .mark").forEach(b => {
+    b.onclick = () => markAsked(b.dataset.q);
+  });
+
+  const cov = S.coverage || {};
+  const open = Object.entries(cov).filter(([, hit]) => !hit).map(([c]) => c);
+  $("#qsub").innerHTML = open.length
+    ? `Generated from this candidate's CV. Nothing asked yet for: <strong>${
+        open.map(esc).join(", ")}</strong> — a competency with no question
+        behind it should not get a score.`
+    : "Generated from this candidate's CV. Every competency has a question.";
+}
+
+function renderSuggestions() {
+  const list = (S.suggestions || []).slice().reverse();
+  // Only the newest is shown in full. A stack of earlier suggestions is
+  // noise at the moment you need to read one -- they are still recorded, and
+  // still listed, just not competing for the same attention.
+  const [latest, ...older] = list;
+  $("#suggestOut").innerHTML = (latest ? `
+    <div class="card sug latest${latest.asked ? " asked" : ""}">
+      <h3>${esc(latest.text)}</h3>
+      <p class="hint">${esc(latest.why_now || "")}</p>
+      <div class="listen"><b>Listen for</b>${esc(latest.listen_for || "")}</div>
+      <p class="hint">evidence for: ${esc(latest.competency_id)}${
+        latest.grounded_in ? ` &middot; they said: ${esc(latest.grounded_in)}` : ""}</p>
+      <div class="row"><button class="ghost mark" data-q="${latest.id}" ${
+        latest.asked ? "disabled" : ""}>${
+        latest.asked ? "Asked" : "Mark as asked"}</button></div>
+    </div>` : "") + (older.length ? `
+    <details class="sugold"><summary>${older.length} earlier suggestion${
+      older.length > 1 ? "s" : ""}</summary>
+      ${older.map(sg => `<p class="probe gen${sg.asked ? " asked" : ""}">${
+        esc(sg.text)}</p>`).join("")}
+    </details>` : "");
+  document.querySelectorAll("#suggestOut .mark").forEach(b => {
+    b.onclick = () => markAsked(b.dataset.q);
+  });
+}
+
+async function markAsked(qid) {
+  const r = await fetch(`/api/sessions/${SID}/questions/asked`, {
+    method: "POST", headers: {"content-type": "application/json"},
+    body: JSON.stringify({who: WHO, t: T, question_id: qid})});
+  if (r.ok) await reload();
+}
+
+// ---- automatic suggestion --------------------------------------------
+// The value of this panel lives in the few seconds after a candidate stops
+// talking. Waiting for a click spends exactly those seconds, so it fires on
+// its own once they have finished -- detected as a pause following a
+// candidate line, the same evidence the transcript builder uses to break one.
+//
+// Three guards, because each call costs money and a duplicate suggestion
+// mid-interview is worse than none: nothing fires while a call is in flight,
+// nothing fires unless the candidate has said meaningfully more since the
+// last one, and the interviewer can switch it off.
+// Tuned against the audio chunk length: a line cannot arrive until its chunk
+// completes, so the wait after the last line only needs to cover the gap
+// between chunks, not another whole one. At 6 s chunks this was 4000 and the
+// suggestion landed ~10 s after the candidate stopped talking.
+const AUTO_PAUSE_MS = 2000;
+const AUTO_MIN_NEW_CHARS = 120;
+let autoTimer = null, inFlight = false, charsAtLastSuggest = 0, candChars = 0;
+
+function setAutoBadge(state) {
+  const b = $("#autoBadge");
+  b.className = "badge " + state;
+  b.textContent = state === "thinking" ? "thinking"
+    : state === "off" ? "manual" : "auto";
+}
+
+$("#autoSuggest").onchange = e => {
+  setAutoBadge(e.target.checked ? "live" : "off");
+  if (!e.target.checked) clearTimeout(autoTimer);
+  $("#suggestMsg").textContent = e.target.checked
+    ? "Will suggest on its own when they finish answering."
+    : "Automatic suggestions are off \u2014 use Suggest now.";
+};
+
+// Called from renderTranscript for every candidate line.
+function candidateSpoke(textLen) {
+  candChars += textLen;
+  if (!$("#autoSuggest").checked) return;
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(() => {
+    if (inFlight) return;
+    // Not enough new speech to be a new answer -- most likely a short
+    // interjection, and re-suggesting on it would repeat the last question.
+    if (candChars - charsAtLastSuggest < AUTO_MIN_NEW_CHARS) return;
+    suggest(true);
+  }, AUTO_PAUSE_MS);
+}
+
+$("#suggestBtn").onclick = () => suggest(false);
+
+async function suggest(auto) {
+  const btn = $("#suggestBtn");
+  if (inFlight) return;
+  inFlight = true;
+  btn.disabled = true;
+  setAutoBadge("thinking");
+  $("#suggestMsg").textContent = auto
+    ? "they stopped \u2014 building a question\u2026"
+    : "reading what they said\u2026";
+  try {
+    const r = await fetch(`/api/sessions/${SID}/questions/next`, {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({who: WHO, t: T})});
+    const d = await r.json();
+    if (!r.ok) {
+      $("#suggestMsg").textContent = r.status === 501
+        ? "generation is not configured on this server"
+        : (d.detail || "could not suggest anything");
+      return;
+    }
+    if (!d.suggestion) {
+      // Waiting for an answer is the normal state at the start of an
+      // interview, not a failure -- so it reads as a status line rather than
+      // as red text, and no suggestion is invented to fill the space.
+      $("#suggestMsg").textContent = d.reason
+        || (d.meta && d.meta.skipped) || "not enough of an answer yet";
+      $("#suggestsec").classList.toggle("waiting", !!d.waiting);
+      return;
+    }
+    $("#suggestsec").classList.remove("waiting");
+    // Whether the last answer was thin is the useful part for a non-expert:
+    // it says "press here" rather than "move on".
+    $("#suggestMsg").textContent = d.answer_was_thin
+      ? "That answer stayed on the surface — this presses into it."
+      : "That answer was substantive — this opens a competency with no evidence yet.";
+    await reload();
+  } finally {
+    inFlight = false;
+    btn.disabled = false;
+    charsAtLastSuggest = candChars;
+    setAutoBadge($("#autoSuggest").checked ? "live" : "off");
+  }
+}
+
+function renderQuestions() {
+  $("#qlist").innerHTML = S.questions.map((q, i) => `
+    <div class="card"><h3>${i + 1}. ${esc(q.text)}</h3>
+      <p class="hint">rates: ${q.competencies.join(", ")}</p>
+      ${q.probes.map(p => p.generated ? `
+        <p class="probe gen"><span class="tag">generated${
+          p.band ? " · " + esc(p.band) : ""}</span> ${esc(p.text)}
+          ${p.grounded_in ? `<span class="from">from the CV: ${
+            esc(p.grounded_in)}</span>` : ""}</p>` : `
+        <p class="probe">probe: ${esc(p.text)}</p>`).join("")}
+      <div class="row">
+        <button class="ghost fu" data-q="${q.id}">Suggest a follow-up from
+          what they just said</button>
+        <span class="hint" data-fumsg="${q.id}"></span>
+      </div>
+      <div data-fuout="${q.id}"></div>
+    </div>`).join("");
+
+  document.querySelectorAll("#qlist .fu").forEach(b => {
+    b.onclick = () => followups(b.dataset.q, b);
+  });
+}
+
+// ---- CV upload and probe generation ----------------------------------
+function renderGeneration() {
+  const g = S.generation || {};
+  if (!g.enabled) return;                 // switched off: no upload, no egress
+  $("#gencard").hidden = false;
+
+  if (!g.consented) {
+    // The refusal is the candidate's, and it is costless by design. Say that
+    // rather than showing a disabled control with no explanation.
+    $("#gencard").innerHTML = `<h3>Questions from the candidate's CV</h3>
+      <p>Not available for this candidate: their consent does not cover
+         sending their CV or their answers to the question-generation
+         service, so nothing can be sent. This is a choice they are entitled
+         to make and it costs them nothing — the interview runs on the fixed
+         questions, which is what it rates anyway.</p>`;
+    return;
+  }
+
+  const cv = g.resume;
+  $("#cvMsg").textContent = cv
+    ? `${cv.filename} · ${cv.chars} characters of text`
+    : "PDF, .docx or plain text. A scanned PDF has no text to read.";
+
+  const locked = g.difficulty_band;
+  $("#bandRow").innerHTML = Object.entries(g.bands).map(([key, b]) => `
+    <button class="ghost band" data-band="${key}"
+      aria-pressed="${locked === key}"
+      ${locked && locked !== key ? "disabled" : ""}
+      title="${esc(b.brief)}">${esc(b.label)}</button>`).join("");
+  document.querySelectorAll("#bandRow .band").forEach(b => {
+    b.onclick = () => generate(b.dataset.band, b);
+  });
+
+  if (locked) {
+    // The band cannot change once probes exist: the record would then have no
+    // answer to "what difficulty did this candidate actually face".
+    $("#bandNote").textContent =
+      `Built at ${locked}. That is fixed for this interview now — the record ` +
+      `has to be able to say which difficulty this candidate faced.`;
+  }
+  if (g.runs && g.runs.length) {
+    $("#genOut").innerHTML = `<p class="hint">${g.runs.length} generation${
+      g.runs.length > 1 ? "s" : ""}: ${g.runs.map(r =>
+      `${r.added} probe${r.added === 1 ? "" : "s"} from the ${esc(r.source)}`)
+      .join(", ")}.</p>`;
+  }
+}
+
+$("#cvUpload").onclick = async () => {
+  const f = $("#cvFile").files[0];
+  if (!f) { $("#cvMsg").textContent = "Choose a file first."; return; }
+  $("#cvMsg").textContent = "reading…";
+  const fd = new FormData();
+  fd.append("file", f); fd.append("who", WHO); fd.append("t", T);
+  const r = await fetch(`/api/sessions/${SID}/resume`, {method: "POST", body: fd});
+  const d = await r.json();
+  if (!r.ok) {
+    // Extraction failures are specific and actionable -- a scanned PDF, a
+    // legacy .doc -- so the reason is shown rather than "upload failed".
+    $("#cvMsg").textContent = d.detail || "could not read that file";
+    return;
+  }
+  $("#cvMsg").textContent = `${d.filename} · ${d.chars} characters of text`;
+  await reload();
+};
+
+async function generate(band, btn) {
+  $("#genErr").textContent = "";
+  const was = btn.textContent;
+  btn.textContent = "generating…";
+  document.querySelectorAll("#bandRow .band").forEach(b => b.disabled = true);
+  try {
+    const r = await fetch(`/api/sessions/${SID}/questions/build`, {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({who: WHO, t: T, band})});
+    const d = await r.json();
+    if (!r.ok) {
+      // 501 is this deployment not being set up for generation -- an
+      // operator's job, not a failure of the interview. It reads as an
+      // instruction rather than as red text, because the interviewer reading
+      // it mid-interview can carry on regardless.
+      if (r.status === 501) {
+        $("#genOut").innerHTML =
+          `<div class="note warn"><p>${esc(d.detail)}</p></div>`;
+        return;
+      }
+      $("#genErr").textContent = d.detail || "generation failed";
+      return;
+    }
+    $("#genOut").innerHTML =
+      `<p class="hint">${d.count} question${d.count === 1 ? "" : "s"} built at
+        ${esc(d.band)}${d.meta && d.meta.seconds ? `, ${d.meta.seconds}s` : ""}
+        ${d.meta && d.meta.redactions
+          ? `· ${d.meta.redactions} contact detail${
+              d.meta.redactions === 1 ? "" : "s"} removed before sending` : ""}
+        ${d.meta && d.meta.truncated ? "· the CV was truncated to fit" : ""}</p>` +
+      // Dropped probes are shown, not hidden. A filter nobody can see is a
+      // filter nobody can check.
+      ((d.meta && d.meta.rejected || []).length
+        ? `<p class="hint">dropped before you saw them: ${
+            d.meta.rejected.map(x => esc(x.reason)).join("; ")}</p>` : "") +
+      (d.comparability
+        ? `<div class="note warn"><p>${esc(d.comparability.warning)}</p></div>` : "");
+    await reload();
+  } finally {
+    btn.textContent = was;
+    document.querySelectorAll("#bandRow .band").forEach(b => b.disabled = false);
+  }
+}
+
+// Follow-ups are SUGGESTIONS: nothing is attached to the interview and
+// nothing is recorded as asked, because the interviewer has not asked it yet.
+async function followups(qid, btn) {
+  const msg = document.querySelector(`[data-fumsg="${qid}"]`);
+  const out = document.querySelector(`[data-fuout="${qid}"]`);
+  msg.textContent = "reading what they said…";
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/sessions/${SID}/questions/followups`, {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({who: WHO, t: T, question_id: qid})});
+    const d = await r.json();
+    if (!r.ok) {
+      msg.textContent = r.status === 501
+        ? "generation is not configured on this server"
+        : (d.detail || "could not suggest anything");
+      return;
+    }
+    if (!d.followups.length) {
+      // An empty answer is a real answer here, and worth saying plainly:
+      // it means the anchors already have what they need.
+      msg.textContent = (d.meta && d.meta.skipped)
+        ? d.meta.skipped
+        : "nothing to add — the answer already covers what the anchors need";
+      out.innerHTML = "";
+      return;
+    }
+    msg.textContent = "";
+    out.innerHTML = d.followups.map(f => `
+      <p class="probe gen"><span class="tag">suggested</span> ${esc(f.text)}
+        <span class="from">because: ${esc(f.why)}</span></p>`).join("");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function reload() {
+  const r = await fetch(
+    `/api/sessions/${SID}/interview?who=${WHO}&t=${encodeURIComponent(T)}`);
+  if (!r.ok) return;
+  S = await r.json();
+  renderPhase();
+  renderGeneration();
+}
+
 function setLive(on, txt) {
   $("#livestate").className = "hud-live" + (on ? "" : " off");
   $("#livetxt").textContent = on ? (txt || "live") : "standby";
@@ -377,6 +1056,12 @@ function renderTranscript(d) {
        isCand ? "candidate" : esc(L.speaker)}</span>` +
     `<span class="said${low ? " low" : ""}">${esc(L.text)}${
        L.continued ? '<span class="cont"> …continued</span>' : ""}</span>`;
+
+  // Only the candidate's speech triggers a suggestion. The interviewer's own
+  // question arriving in the transcript must not fire one, or every question
+  // they ask would immediately generate a reply to itself.
+  if (isCand && L.op !== "append") candidateSpoke((L.text || "").length);
+  else if (isCand) candidateSpoke(0);
 
   $("#tstat").textContent = L.confidence != null
     ? (low ? `low conf ${L.confidence.toFixed(2)}` : `conf ${L.confidence.toFixed(2)}`)
@@ -430,6 +1115,85 @@ function stopMic() {
   micStream && micStream.getTracks().forEach(t => t.stop()); micStream = null;
   $("#micBtn").textContent = "Share my microphone";
   $("#micMsg").textContent = "Your questions will not appear in the transcript.";
+}
+
+// ---- the interviewer's own camera -----------------------------------
+// Relayed to the candidate and to nobody else. These frames are never
+// measured, never transcribed and never written to disk -- the measurement
+// runs one way, on the candidate, and this is the courtesy going back.
+//
+// Deliberately coarser than the candidate's stream: 8 fps at 480 px and
+// quality 0.6, against their 12 fps at 640 px and 0.7. Nothing measures
+// these frames, so the only requirement is that a face reads as a face.
+// Spending more than that would compete for bandwidth with the stream that
+// IS measured, and degrade a signal to improve a picture.
+const CAM_FPS = 8, CAM_W = 480, CAM_Q = 0.6;
+let camStream = null, camWs = null, camTimer = null;
+const camCv = document.createElement("canvas");
+
+$("#camBtn").onclick = async () => {
+  if (camWs) return stopCam();
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: {width: {ideal: 640}, height: {ideal: 360},
+              frameRate: {ideal: 15}}});
+  } catch (e) {
+    $("#camMsg").textContent = "Could not reach your camera (" + e.name + ").";
+    return;
+  }
+  const v = $("#selfView");
+  v.srcObject = camStream;
+  $("#selfWrap").hidden = false;
+  camWs = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://` +
+    `${location.host}/ws/presence/${SID}/${WHO}?t=${encodeURIComponent(T)}`);
+  camWs.onopen = () => {
+    $("#camBtn").textContent = "Turn off my camera";
+    // Left deliberately vague until the server says how many people are
+    // actually connected -- "the candidate can see you" is a claim about
+    // them, not about this camera, and it arrives a moment later.
+    $("#camMsg").textContent = "Camera on.";
+    camTimer = setInterval(() => {
+      if (!camWs || camWs.readyState !== 1 || !v.videoWidth) return;
+      const w = CAM_W, h = Math.round(v.videoHeight * (CAM_W / v.videoWidth));
+      camCv.width = w; camCv.height = h;
+      // Drawn unmirrored. The self-view tile is flipped by CSS because an
+      // unmirrored image of yourself is quietly disorienting, but the
+      // candidate should see you the way the room would.
+      camCv.getContext("2d").drawImage(v, 0, 0, w, h);
+      camCv.toBlob(b => b && camWs && camWs.readyState === 1 &&
+        b.arrayBuffer().then(a => camWs.send(a)), "image/jpeg", CAM_Q);
+    }, 1000 / CAM_FPS);
+  };
+  // Two things arrive here: a refusal (the slot is one at a time, so a second
+  // panel member is told who holds it) and the number of people who can
+  // actually see this camera. The second is why the page does not claim the
+  // candidate can see you before anyone has joined.
+  camWs.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.error) { $("#camMsg").textContent = d.reason || d.error; return; }
+      if (d.type === "viewers") {
+        $("#camMsg").textContent = d.count
+          ? "The candidate can see you."
+          : "Nobody has joined yet. They will see you when they do.";
+      }
+    } catch (_) {}
+  };
+  camWs.onclose = () => { if (camWs) stopCam(true); };
+};
+
+function stopCam(dropped) {
+  clearInterval(camTimer); camTimer = null;
+  const ws = camWs; camWs = null;          // cleared first: onclose re-enters
+  try { ws && ws.close(); } catch (_) {}
+  camStream && camStream.getTracks().forEach(t => t.stop());
+  camStream = null;
+  $("#selfView").srcObject = null;
+  $("#selfWrap").hidden = true;
+  $("#camBtn").textContent = "Turn on my camera";
+  // A refusal or a dropped socket has already written a more specific
+  // message; do not overwrite it with the generic one.
+  if (!dropped) $("#camMsg").textContent = "The candidate can no longer see you.";
 }
 
 load();

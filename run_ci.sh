@@ -11,6 +11,13 @@ echo "== interview engine =="     && python3 tests/test_interview.py
 echo "== linguistic content ==" && python3 tests/test_text.py
 echo "== transcript lines =="   && python3 tests/test_transcript_lines.py
 echo "== adaptive roi =="       && python3 tests/test_roi.py
+echo "== face identity =="     && python3 tests/test_identity.py
+echo "== subject record =="    && python3 tests/test_record.py
+echo "== linkedin import =="   && python3 tests/test_linkedin.py
+echo "== interviewer camera ==" && python3 tests/test_presence.py
+echo "== capture gaps =="     && python3 tests/test_capture_gap.py
+echo "== generated probes ==" && python3 tests/test_generate.py
+echo "== consent enforcement ==" && python3 tests/test_consent_enforcement.py
 echo "== end-to-end selftest ==" && python3 run_live.py --selftest
 echo "== dependency pins =="     && python3 -c "
 import mediapipe, sys

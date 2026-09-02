@@ -50,6 +50,24 @@ MODELS = {
         "sha256": "59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbbf6753c459690d574a",
         "size_bytes": 5777746,
     },
+    # SFace, for the enrolled-gallery face identity feature (signals/identity.py).
+    #
+    # OPTIONAL, and not committed. 38 MB is too much to vendor for a feature
+    # only used by a team that has enrolled itself, and unlike the landmarkers
+    # it is not on any capture path -- nothing in run_live.py, run_session.py
+    # or web/ imports it. Fetch it with fetch_models.py when you want identity;
+    # everything else runs without it.
+    #
+    # Pinned all the same. A face template built with different weights is not
+    # comparable to one built with these, so an unnoticed model swap would
+    # silently invalidate every enrolment in the gallery.
+    "face_recognition_sface.onnx": {
+        "url": ("https://github.com/opencv/opencv_zoo/raw/main/models/"
+                "face_recognition_sface/face_recognition_sface_2021dec.onnx"),
+        "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+        "size_bytes": 38696353,
+        "optional": True,
+    },
 }
 
 # Escape hatch for the fetch script and for CI images that build the cache.
@@ -138,13 +156,26 @@ def download(name: str, path: str = None) -> str:
     return path
 
 
+def is_optional(name: str) -> bool:
+    return bool(MODELS[name].get("optional"))
+
+
 def status() -> list:
-    """(name, ok, detail) for each pinned model. Used by preflight and CI."""
+    """(name, ok, detail) for each pinned model. Used by preflight and CI.
+
+    An optional model that is simply absent reports ok with a note: it is not
+    a broken install, it is a feature nobody has fetched. An optional model
+    that is PRESENT is verified like any other -- being optional excuses you
+    from having it, not from having the right one.
+    """
     out = []
     for name in MODELS:
         try:
             p = verify(name)
             out.append((name, True, f"{os.path.getsize(p) / 1e6:.1f} MB verified"))
         except ModelError as e:
-            out.append((name, False, str(e).splitlines()[0]))
+            if is_optional(name) and not os.path.exists(model_path(name)):
+                out.append((name, True, "optional, not fetched"))
+            else:
+                out.append((name, False, str(e).splitlines()[0]))
     return out
