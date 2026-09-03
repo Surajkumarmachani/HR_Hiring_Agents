@@ -1,3 +1,17 @@
+# --- Web server (WP5) ----------------------------------------------------
+# These were installed by hand during development and never declared, so a
+# fresh machine -- a colleague's laptop, a CI runner, a deployment -- got as
+# far as `import fastapi` and stopped. Pinned low rather than exactly: the
+# app uses no API that has moved in these ranges.
+fastapi>=0.110          # the app itself
+uvicorn[standard]>=0.27 # ASGI server. [standard] brings uvloop/httptools AND
+                        # the `websockets` implementation -- the interview is
+                        # five WebSockets, so plain `uvicorn` serves a page
+                        # that cannot connect.
+python-multipart>=0.0.9 # multipart/form-data: the CV upload and the recording
+                        # upload both post files. FastAPI raises at import
+                        # time without it.
+
 # Core real-time pipeline
 mediapipe>=0.10.30,<1.0  # FaceLandmarker (478 lm + 52 blendshapes) + Pose
                          # NOT 1.0.x: on macOS arm64 the face-detector subgraph

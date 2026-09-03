@@ -1,0 +1,36 @@
+# Keep the image to what actually serves an interview.
+
+.git
+.github
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+
+# Candidate data. A CV, a recording, a consent record and a face template are
+# personal data; none of it belongs in an image that gets pushed to a
+# registry. The running container writes here on a mounted volume instead.
+out/
+
+# API keys. The host injects GEMINI_API_KEY as an environment variable --
+# baking .env into a layer puts the key in the registry and in every pull.
+.env
+
+# Offline analysis and comparison scripts. They pull in torch (511 MB) and
+# matplotlib, neither of which the server imports, and none of them runs in
+# a deployment.
+compare_live.py
+compare_rppg.py
+fetch_compare_models.py
+analyse_audio.py
+build_dictionary.py
+build_xlsx.py
+vendor/
+
+# The 155-parameter catalogue source and the spec. Documentation, not runtime.
+spec.html
+docs/interview-signals-readiness.pdf
+
+# Tests run in CI, not in the image.
+tests/
+run_ci.sh

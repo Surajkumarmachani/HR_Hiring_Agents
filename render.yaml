@@ -1,0 +1,32 @@
+# Render blueprint. `render.yaml` in the repo root is picked up by
+# Render -> New -> Blueprint, so the service, its disk and its health check
+# are versioned here rather than typed into a dashboard.
+services:
+  - type: web
+    name: interview-signals
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: singapore          # nearest to the interviewers; move if not
+    plan: standard             # 2 GB RAM. See the note below.
+
+    # ONE. See the header of the Dockerfile: the session lives in process
+    # memory, so a second replica cannot see the interview the first one is
+    # holding. Raising this does not add capacity, it breaks calls.
+    numInstances: 1
+
+    healthCheckPath: /
+
+    # Session records, interview records, consent, the audit log, uploaded
+    # CVs and recordings. Without this every deploy wipes the consent
+    # records -- the one artefact that has to outlive the container, because
+    # it is the evidence that the candidate agreed at all.
+    disk:
+      name: interview-out
+      mountPath: /app/out
+      sizeGB: 10
+
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false            # set in the dashboard; never committed
+      - key: PYTHON_VERSION
+        value: "3.11"
