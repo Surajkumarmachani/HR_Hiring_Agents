@@ -549,6 +549,14 @@ def interview_state(sid: str, who: str, t: str):
         "candidate_name": s.candidate_name,
         "organisation": s.organisation,
         "identify_candidate": s.identify_candidate,
+        # Why the transcript panel is empty, which has three quite different
+        # causes that used to look identical: nobody has joined, they joined
+        # and declined the transcript, or they have not spoken yet. The
+        # middle one never resolves by waiting, so the panel has to say so.
+        "candidate_joined": (sid, "candidate") in HUB.transcribers,
+        "candidate_transcript_ok": (
+            None if not s.consent
+            else "audio_transcript" in (s.consent.get("signals") or [])),
         "guide": {"id": s.guide.id, "version": s.guide.version,
                   "digest": s.guide.digest()},
         # Probes come back as objects rather than strings so the panel can
@@ -1131,9 +1139,35 @@ async def assess(sid: str, request: Request):
     return {"ok": True, "band": band,
             "assessment": {"id": record["id"],
                            "read": record["read"],
+                           "score_out_of_10": record["score_out_of_10"],
                            "after_lock": record["after_lock"],
                            "counter_questions": record["counter_questions"]},
             "meta": _public_meta(meta),
+            "coverage": s.interview.coverage()}
+
+
+@app.post("/api/sessions/{sid}/questions/own")
+async def own_question(sid: str, request: Request):
+    """Record a question the interviewer asked off their own bat.
+
+    Not gated on egress: nothing is sent anywhere. This is the record
+    catching up with what happened in the room, and it matters because a
+    competency rated on an answer to a question that appears nowhere reads,
+    afterwards, like a score with no question behind it.
+    """
+    s = get_session(sid)
+    body = await request.json()
+    who = _slug(body.get("who"))
+    _interviewer(s, who, body.get("t"))
+    try:
+        entry = s.interview.add_own_question(
+            body.get("text"), body.get("competency_id") or None, by=who)
+    except InterviewError as e:
+        raise HTTPException(422, str(e))
+    except GuideError as e:
+        raise HTTPException(422, str(e))
+    s.interview.save()
+    return {"ok": True, "question": entry,
             "coverage": s.interview.coverage()}
 
 
@@ -1156,7 +1190,7 @@ def _public_meta(meta):
              # many of its own lines were withheld for naming a protected
              # topic. The second is the interesting one -- a filter nobody
              # can see firing is a filter nobody can check.
-             "depth", "answer_chars")} | {
+             "score_out_of_10", "answer_chars")} | {
         "withheld_from_read": len(meta.get("withheld_from_read") or []),
         "rejected": [{"reason": r.get("reason"),
                       "text": (r.get("item") or {}).get("text")}

@@ -336,21 +336,37 @@ def _followup_schema(max_items):
 def _assess_schema(max_items):
     """A read of one answer, plus the questions that would test it.
 
-    THE FIELD THIS SCHEMA DOES NOT HAVE
-    -----------------------------------
-    A score. There is no number anywhere in here and no anchor level, because
-    the moment a model can put a candidate on the guide's scale it has made
-    the rating and the human has become the person who agreed with it. What
-    it may do is describe the ANSWER: which claims came with a mechanism,
-    which were only asserted, what the anchors still need. That is the thing
-    an interviewer outside the candidate's field cannot do for themselves,
-    and it is not the same act as scoring them.
+    THE SCORE, AND WHAT IT IS NOT
+    -----------------------------
+    `score_out_of_10` rates ONE ANSWER on how well it evidenced the one
+    competency that answer was aimed at. It is requested by the operator and
+    shown to the interviewer to help them judge an answer in a domain they may
+    not know.
 
-    `depth` is the one judgement here, and it is a judgement about the answer
-    rather than about the person: it is the graded form of `answer_was_thin`
-    in `_next_schema`, which has always been generated and has never been
-    rated. It is deliberately a word and not a 1-5, so that it cannot be
-    read off the screen and typed into the scale.
+    It is deliberately out of TEN while the guide's competency scale is out of
+    FIVE, and the mismatch is the point: the two numbers cannot be confused
+    for one another, and there is no arithmetic that turns one into the other.
+    A rating still has to be typed by a person against the written anchors,
+    which are identical for every candidate; nothing here is passed to
+    `Interview.rate()`, and the engine has no path from an assessment to a
+    score.
+
+    What this schema still refuses: an anchor level, a competency rating, a
+    hire recommendation, a seniority estimate, a comparison to another
+    candidate, or any judgement of the person rather than the answer.
+
+    THE HONEST RISK
+    ---------------
+    A number on screen anchors the person reading it. An interviewer shown
+    "4/10" on three answers will rate that competency lower than one who was
+    shown the same three answers and no number, and that is exactly the
+    influence behavioural anchors exist to remove. This is not mitigated by
+    the 10-vs-5 mismatch and should not be described as if it were. What the
+    system does instead is keep the record able to show it happened:
+    `Interview.add_assessment` stores every read with who asked for it and
+    whether they had already locked, and `summary()` reports the scores the
+    panel was shown. See `config.generation.assess_answers` to switch the
+    whole thing off.
     """
     return {
         "type": "object",
@@ -358,13 +374,21 @@ def _assess_schema(max_items):
             "read": {
                 "type": "object",
                 "properties": {
-                    "depth": {
+                    "score_out_of_10": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "how well THIS ANSWER evidenced the "
+                                       "competency it was aimed at, on the "
+                                       "scale given in the rules. A judgement "
+                                       "about the answer, not about the "
+                                       "person, and not a competency rating.",
+                    },
+                    "score_reason": {
                         "type": "string",
-                        "enum": ["no_answer", "shallow", "partial",
-                                 "substantive", "exceptional"],
-                        "description": "how far into the work this answer "
-                                       "actually went. About the answer, not "
-                                       "the candidate, and never a score.",
+                        "description": "one line naming what the score turns "
+                                       "on, so the interviewer can disagree "
+                                       "with it rather than only accept it",
                     },
                     "summary": {
                         "type": "string",
@@ -412,9 +436,9 @@ def _assess_schema(max_items):
                                        "it anyway",
                     },
                 },
-                "required": ["depth", "summary", "supported", "asserted",
-                             "missing", "inconsistencies",
-                             "transcription_caveat"],
+                "required": ["score_out_of_10", "score_reason", "summary",
+                             "supported", "asserted", "missing",
+                             "inconsistencies", "transcription_caveat"],
                 "additionalProperties": False,
             },
             "counter_questions": {
@@ -608,18 +632,44 @@ the claims came with a mechanism, a number, a trade-off or an outcome behind
 them -- and someone outside the domain cannot hear that difference in real
 time. That is the whole job here.
 
-WHAT YOU ARE NOT DOING
-You are not scoring the candidate. Do not place them on the anchors, do not
-say which anchor level the answer reaches, do not say whether they should be
-hired, do not estimate their seniority, do not compare them to anyone. The
-anchors are above so you can say what evidence is still MISSING for them --
-not so you can apply them. A rater who reads your output and then scores what
-you implied has not made an independent judgement, and the whole defence of
-this process is that they did.
+SCORING THE ANSWER
+Give `score_out_of_10` for how well THIS ANSWER evidenced the one competency
+it was aimed at. Score the answer in front of you, not the person who gave
+it and not their career.
 
-So: describe the answer, name what is backed and what is only asserted, say
-what is still missing, and write the questions that would settle it. The
-score is theirs.
+  1-2   No answer, or nothing about the question that was asked.
+  3-4   A claim and nothing behind it. Names the technology, the outcome or
+        the decision, with no mechanism, no number and no trade-off.
+  5-6   Partly backed. One real detail or one concrete outcome, with the rest
+        asserted. A competent answer that stops at the surface.
+  7-8   Backed. Mechanism AND consequence: how it worked, what it cost, what
+        they traded away, what broke. Specific enough that only someone who
+        did the work could give it.
+  9-10  All of the above plus the boundary: where the approach fails, what
+        would have falsified it, what they would do differently and why.
+
+Anchor on EVIDENCE, not delivery. A hesitant answer full of specifics scores
+above a fluent answer full of claims. Do not reward confidence, vocabulary,
+seniority-signalling, or a good accent, and do not penalise the reverse --
+those are the channels through which bias reaches a score, and the transcript
+is exactly where they are most visible to you and least relevant.
+
+Score against the difficulty band you are given. An answer that is complete
+at Easy is thin at Hard, and the band belongs to the role rather than to this
+candidate.
+
+`score_reason` is one line naming what the score turns on, so the interviewer
+can disagree with it. A number with no stated reason cannot be argued with,
+only obeyed.
+
+WHAT YOU ARE STILL NOT DOING
+The score is about the answer. It is NOT a competency rating. Do not place
+the candidate on the guide's anchors, do not say which anchor level they
+reach, do not say whether they should be hired, do not estimate their
+seniority, and do not compare them to anyone. The anchors are given above so
+you can say what evidence is still MISSING for them -- not so you can apply
+them. The rating is made by a person, against those anchors, on a different
+scale, and it is theirs.
 
 HOW TO READ AN ANSWER
 `supported` is for claims that came with something behind them -- how it
@@ -676,6 +726,8 @@ def _assess_user_prompt(question, competencies, answer, band, max_n):
         f"Judge the answer against that band. An answer that would be "
         f"complete at Easy may be thin at Hard, and the band is the role's, "
         f"not this candidate's.\n\n"
+        f"Put the single most useful counter-question first: the one the "
+        f"interviewer should ask if they ask only one.\n\n"
         f"Write at most {max_n} counter-questions, or none if the answer "
         f"already holds up.\n\n"
         f"WHAT THE CANDIDATE SAID, transcribed live\n{'=' * 41}\n{answer}")
@@ -1289,13 +1341,25 @@ def _safe_prose(items):
     return kept, withheld
 
 
-DEPTH_LABELS = {
-    "no_answer": "no answer yet",
-    "shallow": "stayed on the surface",
-    "partial": "partly backed up",
-    "substantive": "backed up",
-    "exceptional": "went well past what was asked",
-}
+def score_band(score):
+    """A word for a score, so the number is never the only thing on screen.
+
+    A bare "5/10" reads as a verdict on the person. The words describe the
+    ANSWER and say what to do about it, which is the only thing the number is
+    for -- and an interviewer who reads "partly backed" is being pointed at a
+    gap rather than handed a grade.
+    """
+    if score is None:
+        return None
+    if score <= 2:
+        return "no real answer"
+    if score <= 4:
+        return "claim with nothing behind it"
+    if score <= 6:
+        return "partly backed up"
+    if score <= 8:
+        return "backed up"
+    return "backed up, with its limits"
 
 
 def assess_answer(question, answer_text, guide, band, cfg=None):
@@ -1364,9 +1428,16 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
         _assess_schema(max_n), cfg)
 
     raw_read = data.get("read") or {}
-    depth = raw_read.get("depth")
-    if depth not in DEPTH_LABELS:
-        depth = None
+    # Clamped rather than trusted. The schema says 1-10 and the API enforces
+    # it, but a number that arrives outside the range would render as a
+    # nonsense grade rather than as an error, and nobody would query it.
+    score = raw_read.get("score_out_of_10")
+    try:
+        score = int(score)
+        score = score if 1 <= score <= 10 else None
+    except (TypeError, ValueError):
+        score = None
+    reason, _reason_withheld = _safe_prose([raw_read.get("score_reason")])
     summary, summary_withheld = _safe_prose([raw_read.get("summary")])
     supported, w1 = _safe_prose(raw_read.get("supported"))
     asserted, w2 = _safe_prose(raw_read.get("asserted"))
@@ -1382,8 +1453,9 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
             item["question_id"] = question.id
 
     read = {
-        "depth": depth,
-        "depth_label": DEPTH_LABELS.get(depth),
+        "score_out_of_10": score,
+        "score_band": score_band(score),
+        "score_reason": reason[0] if reason else "",
         "summary": summary[0] if summary else "",
         "supported": supported,
         "asserted": asserted,
@@ -1394,11 +1466,13 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
         # travels: into the session JSON, into the panel's screen, into
         # whatever WP6 replaces the store with. Wherever it is read, it has
         # to arrive saying what it is not.
-        "not_a_rating": ("A read of the answer, generated to help the "
-                         "interviewer decide what to ask next. It carries no "
-                         "score and is not an input to one: every rating is "
-                         "made by a person against the guide's anchors, "
-                         "which are identical for every candidate."),
+        "not_a_rating": ("A score out of ten for ONE ANSWER, generated to "
+                         "help the interviewer judge an answer in a domain "
+                         "they may not know, and to aim the next question. "
+                         "It is not a competency rating and not an input to "
+                         "one: competency ratings are out of five, made by a "
+                         "person against written anchors that are identical "
+                         "for every candidate for this role."),
     }
 
     meta = {
@@ -1411,7 +1485,7 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
         "seconds": round(time.time() - t0, 1),
         **prov,                             # what actually served it
         "answer_chars": len(answer),
-        "depth": depth,
+        "score_out_of_10": score,
         "returned": len(data.get("counter_questions", [])),
         "kept": len(kept),
         "rejected": rejected,

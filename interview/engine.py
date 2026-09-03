@@ -244,6 +244,43 @@ class Interview:
             self._log("question_asked", {"question_id": question_id})
         return list(self.asked)
 
+    def add_own_question(self, text, competency_id=None, by=None):
+        """Record a question the interviewer wrote themselves.
+
+        The generated set is a plan and the interviewer is not bound by it.
+        A question they thought of in the room is often the best one asked --
+        but if it only exists as speech it is missing from the record, and
+        the record then shows a competency rated on evidence no question
+        appears to have elicited.
+
+        Stored alongside the suggestions so it gets an id, can be marked
+        asked, counts towards coverage, and can have its answer read back
+        like any other. `generated` is False, which is what keeps it
+        distinguishable from the model's questions everywhere it is shown.
+        """
+        text = (text or "").strip()
+        if not text:
+            raise InterviewError("an empty question is not a question")
+        if competency_id:
+            self.guide.competency(competency_id)      # raises if unknown
+        n_own = sum(1 for x in self.suggestions if not x.get("generated"))
+        entry = {
+            "id": "o%d" % (n_own + 1),
+            "text": text,
+            "competency_id": competency_id,
+            "generated": False,
+            "asked": True,
+            "author": by or getpass.getuser(),
+            "at": _now(),
+        }
+        self.suggestions.append(entry)
+        if entry["id"] not in self.asked:
+            self.asked.append(entry["id"])
+        self._log("own_question_asked", {
+            "question_id": entry["id"], "by": entry["author"],
+            "competency_id": competency_id})
+        return entry
+
     def add_suggestion(self, suggestion, meta):
         """Keep a live suggestion, asked or not.
 
@@ -321,6 +358,7 @@ class Interview:
             # has to take that on trust in either direction.
             "after_lock": after_lock,
             "band": meta.get("band"),
+            "score_out_of_10": read.get("score_out_of_10"),
             "read": read,
             "counter_question_ids": [e["id"] for e in registered],
             "model": meta.get("served_by_model") or meta.get("model"),
@@ -333,7 +371,7 @@ class Interview:
             "by": by,
             "question_id": record["question_id"],
             "after_lock": after_lock,
-            "depth": read.get("depth"),
+            "score_out_of_10": read.get("score_out_of_10"),
             "counter_questions": len(registered),
             "model_served_by": meta.get("served_by_model"),
             "request_id": meta.get("request_id"),
@@ -697,8 +735,12 @@ class Interview:
                     for a in self.assessments),
                 "after_lock": sum(1 for a in self.assessments
                                   if a.get("after_lock")),
-                "depths": [a.get("read", {}).get("depth")
-                           for a in self.assessments],
+                # The numbers the panel was actually shown. Recorded because
+                # a reader of this file otherwise cannot tell whether a
+                # competency rated 2 was rated by someone who had just been
+                # shown 3/10 on every answer behind it.
+                "scores_shown": [a.get("score_out_of_10")
+                                 for a in self.assessments],
                 "note": ("Generated readings of what the candidate said -- "
                          "which claims they backed, which they only asserted "
                          "-- shown to the interviewer so they could decide "
@@ -708,7 +750,15 @@ class Interview:
                          "for every candidate for this role. `after_lock` "
                          "counts reads requested by a rater who had already "
                          "locked, and so could not have shaped their "
-                         "scores."),
+                         "scores.\n"
+                         "`scores_shown` are per-ANSWER scores out of ten "
+                         "that the panel saw on screen. They are out of ten "
+                         "where competency ratings are out of five, they "
+                         "were never added or averaged into anything, and "
+                         "no arithmetic connects the two. They are recorded "
+                         "because a number on screen influences the person "
+                         "reading it, and a record that hid them could not "
+                         "show whether it did."),
             },
             # In CV-derived mode the question set came from this candidate's
             # CV, so a reader has to be able to see what was actually asked

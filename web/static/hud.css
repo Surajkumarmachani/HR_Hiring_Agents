@@ -496,3 +496,65 @@ body.hud {
 }
 .jcounters .sug { border-left-color: var(--s-gaze); margin-bottom: 10px; }
 .jcounters .sug:last-child { margin-bottom: 0; }
+
+/* ---- the question on the table -------------------------------------- */
+.activeq { padding: 10px 11px 2px; }
+.activeq h3 {
+  color: var(--hud-ink); font-size: 15px; line-height: 1.42; margin: 0 0 6px;
+}
+.activeq .qnum {
+  font-size: 10px; letter-spacing: .13em; text-transform: uppercase;
+  color: var(--s-gaze); margin: 0 0 5px;
+}
+.activeq .hint { margin: 0 0 8px; }
+
+/* What to listen for, folded away on the question card. Available in one
+   click, not competing with the question itself -- which is the thing being
+   read aloud in the next second. */
+.peek { margin: 8px 0 0; }
+.peek summary {
+  cursor: pointer; font-size: 11px; letter-spacing: .06em;
+  color: var(--hud-dim); padding: 3px 0;
+}
+.peek summary:hover { color: var(--s-face); }
+.peek .listen { margin-top: 6px; }
+
+/* ---- the score ------------------------------------------------------- */
+/* Big, because it is what the interviewer looks at first, and stating it
+   plainly is more honest than burying a number they will find anyway. The
+   "/10" stays attached to the digits so it can never be misread as one of
+   the guide's five-point competency scores. */
+.scorerow { display: flex; align-items: baseline; gap: 11px; margin-bottom: 4px; }
+.scoren {
+  font-size: 34px; font-weight: 600; line-height: 1;
+  color: var(--hud-ink); font-variant-numeric: tabular-nums;
+}
+.scoren em {
+  font-style: normal; font-size: 14px; color: var(--hud-dim);
+  letter-spacing: .02em;
+}
+.scoreband {
+  font-size: 12.5px; color: var(--s-gaze); letter-spacing: .02em;
+}
+.scorewhy {
+  color: var(--hud-dim) !important; font-size: 12.5px; line-height: 1.5;
+  margin: 0 0 10px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--hud-rule);
+}
+
+/* ---- moving on ------------------------------------------------------- */
+.nextrow {
+  display: flex; gap: 8px; padding: 2px 11px 11px; flex-wrap: wrap;
+}
+.nextrow button { font-size: 11px; padding: 5px 11px; }
+.ownbox { padding: 0 11px 12px; display: grid; gap: 8px; }
+.ownbox input[type=text], .ownbox select { width: 100%; }
+.ownbox .row { align-items: center; }
+
+/* An empty transcript has three causes and they are not the same problem.
+   The one that never resolves by waiting gets the warning colour. */
+.warnplace {
+  color: var(--state-warn) !important;
+  border-left: 2px solid var(--state-warn);
+  padding-left: 9px; line-height: 1.5;
+}

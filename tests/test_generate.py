@@ -505,14 +505,14 @@ err = _err(lambda: probes_from_resume("x" * 400, GUIDE, "extremely_hard"))
 check("an unknown band raises rather than defaulting",
       isinstance(err, GenerationError) and "unknown difficulty band" in str(err))
 
-print("\n18. A read of an answer cannot carry a score")
+print("\n18. The answer score is bounded, stated, and not a competency rating")
 # The feature most able to destroy this project quietly, and for a reason the
 # other three do not share: it is USEFUL. An interviewer outside the
 # candidate's field genuinely cannot hear an unbacked claim in real time, so
 # the pressure is always towards letting the model say a little more. The
 # checks below are where "a little more" stops.
-from interview.generate import (ASSESS_RULES, DEPTH_LABELS, _assess_schema,
-                                _safe_prose, assess_answer)
+from interview.generate import (ASSESS_RULES, _assess_schema, _safe_prose,
+                                assess_answer, score_band)
 
 sch = _assess_schema(3)
 read_props = sch["properties"]["read"]["properties"]
@@ -533,25 +533,48 @@ def _numeric_fields(node, path=""):
     return found
 
 
+# The score is now requested, so the schema HAS one number. Exactly one, in
+# one place, bounded -- which is a different claim from "no numbers" and has
+# to be asserted as the different claim rather than deleted.
 nums = _numeric_fields(sch)
-check("the schema has no numeric field anywhere -- nowhere to put a score",
-      not nums, ", ".join(nums) or "none")
-check("and no field named like a rating",
+check("exactly one numeric field exists in the whole schema",
+      len(nums) == 1, ", ".join(nums) or "none")
+check("and it is the answer score, bounded 1-10",
+      read_props["score_out_of_10"]["type"] == "integer"
+      and read_props["score_out_of_10"]["minimum"] == 1
+      and read_props["score_out_of_10"]["maximum"] == 10)
+check("the score is out of TEN, where a competency rating is out of five",
+      read_props["score_out_of_10"]["maximum"] != 5)
+check("it must come with a stated reason, so it can be argued with",
+      "score_reason" in read_props
+      and "score_reason" in sch["properties"]["read"]["required"])
+check("no field is named like a COMPETENCY rating",
       not any(k in read_props or k in cq["properties"] for k in
-              ("score", "rating", "anchor", "anchor_level", "level", "verdict",
-               "recommendation", "hire", "seniority", "rank", "percentile")),
+              ("rating", "anchor", "anchor_level", "level", "verdict",
+               "recommendation", "hire", "seniority", "rank", "percentile",
+               "overall", "competency_score")),
       ", ".join(sorted(set(read_props) | set(cq["properties"]))))
-check("depth is a closed set of WORDS, not a scale",
-      read_props["depth"]["type"] == "string"
-      and set(read_props["depth"]["enum"]) == set(DEPTH_LABELS))
+check("a score always comes with a word, so the number is never alone",
+      all(score_band(i) for i in range(1, 11))
+      and score_band(None) is None)
 check("the read must say what is asserted as well as what is supported",
       {"supported", "asserted", "missing"} <= set(read_props))
 check("a counter-question is aimed at a competency and names its target",
       {"competency_id", "text", "targets"} <= set(cq["required"]))
 check("counter-questions are capped",
       sch["properties"]["counter_questions"]["maxItems"] == 3)
-check("the rules tell the model not to apply the anchors",
-      "do not place them on the anchors" in ASSESS_RULES.lower())
+# Whitespace-normalised: the rules are wrapped prose, so a phrase that reads
+# as contiguous on screen contains a newline in the source and a naive `in`
+# test fails on text that is present and correct.
+rules = " ".join(ASSESS_RULES.lower().split())
+check("the rules forbid applying the guide's anchors",
+      "do not place the candidate on the guide's anchors" in rules)
+check("and forbid a hire recommendation or a seniority estimate",
+      "should be hired" in rules and "seniority" in rules)
+check("scoring is anchored on evidence rather than delivery",
+      "not delivery" in rules and "do not reward confidence" in rules)
+check("the ten-point ladder is spelled out, not left to taste",
+      all(b in ASSESS_RULES for b in ("1-2", "3-4", "5-6", "7-8", "9-10")))
 
 print("\n19. The read's prose is filtered too, and the filter is visible")
 # The questions were always filtered. The prose was the new hole: a line
@@ -589,12 +612,18 @@ try:
     iv = Interview("INT-A1", "cand-a", GUIDE, ["alice", "bob"],
                    store_root=store)
     assessment = {
-        "read": {"depth": "shallow", "depth_label": "stayed on the surface",
+        "read": {"score_out_of_10": 4,
+                 "score_band": "claim with nothing behind it",
+                 "score_reason": "named the tool, not the reasoning",
                  "summary": "Named the technology, not the reasoning.",
                  "supported": [], "asserted": ["that Kafka was necessary"],
                  "missing": ["what the alternative cost"],
                  "inconsistencies": [], "transcription_caveat": "",
-                 "not_a_rating": "no score"},
+                 "not_a_rating": "A score out of ten for ONE ANSWER. It "
+                                 "is not a competency rating and not an "
+                                 "input to one: competency ratings are out "
+                                 "of five, made by a person against written "
+                                 "anchors."},
         "counter_questions": [
             {"competency_id": COMP, "text": "What broke when you tried it "
                                             "without the queue?",
@@ -614,12 +643,15 @@ try:
 
     # The invariant, stated as an executable check: there is no path from a
     # read to a score. If someone later adds one, this is where it fails.
-    check("no score reached the panel from the read",
-          not any("score" in str(a.get("read", {})) for a in iv.assessments)
-          or "not_a_rating" in str(iv.assessments[0]["read"]))
+    check("the read still declares what it is not",
+          "not a competency rating"
+          in iv.assessments[0]["read"]["not_a_rating"].lower())
     flat = json.dumps(iv.assessments)
-    check("and the stored read carries no numeric verdict",
-          not any(k in flat for k in ('"score"', '"rating"', '"anchor_level"')))
+    check("the stored read carries no COMPETENCY rating",
+          not any(k in flat for k in
+                  ('"rating"', '"anchor_level"', '"competency_score"')))
+    check("the answer score is stored where a reader can find it",
+          rec["score_out_of_10"] == 4)
 
     # Rating still requires a human, an anchor and evidence -- unchanged.
     iv.rate("alice", COMP, GUIDE.competency(COMP).scale()[0],
@@ -662,10 +694,44 @@ try:
     check("it counts them and their counter-questions",
           ar["count"] == 2 and ar["counter_questions"] == 2)
     check("it counts the ones requested after a lock", ar["after_lock"] == 1)
-    check("and says in the record itself that they carry no score",
-          "NO score" in ar["note"])
+    check("the record reports the scores the panel was actually shown",
+          ar["scores_shown"] == [4, 4], str(ar["scores_shown"]))
+    check("and says in the record that they are not competency ratings",
+          "not a competency rating" in ar["note"].lower()
+          or "out of five" in ar["note"])
     check("no competency row gained a score from the read",
           all(r["scores"].get("bob") is None for r in summ["competencies"]))
+finally:
+    shutil.rmtree(store)
+
+print("\n22. A question the interviewer wrote is in the record too")
+store = tempfile.mkdtemp()
+try:
+    iv = Interview("INT-O1", "cand-o", GUIDE, ["alice"], store_root=store,
+                   cv_derived=True)
+    own = iv.add_own_question("What broke first?", COMP, by="alice")
+    check("it gets an id and is marked asked", own["id"] == "o1"
+          and own["asked"] is True)
+    check("and is NOT labelled generated -- the panel can tell them apart",
+          own["generated"] is False)
+    check("it counts towards coverage like any other asked question",
+          iv.coverage()[COMP] is True)
+    check("the author is recorded", own["author"] == "alice")
+    check("an empty question is refused",
+          _raises(lambda: iv.add_own_question("   ", by="alice"),
+                  InterviewError))
+    check("an unknown competency is refused",
+          _raises(lambda: iv.add_own_question("q", "not_a_competency",
+                                              by="alice"), Exception))
+    check("no competency at all is allowed -- not every question rates one",
+          iv.add_own_question("Just curious?", by="alice")["id"] == "o2")
+    iv.save()
+    back = Interview.load("INT-O1", GUIDE, store_root=store)
+    check("it survives a round trip",
+          [q["id"] for q in back.suggestions if not q.get("generated")]
+          == ["o1", "o2"])
+    check("and is in the audit trail",
+          [e["event"] for e in back.events].count("own_question_asked") == 2)
 finally:
     shutil.rmtree(store)
 
@@ -674,8 +740,9 @@ if failures:
     print(f"FAIL — {len(failures)} check(s): {', '.join(failures)}")
     sys.exit(1)
 print("PASS — generated probes stay probes: unrated, filtered, traceable, "
-      "and consent-gated. A read of an answer stays a read: no score, no "
-      "path to one, recorded with who saw it.")
+      "and consent-gated. An answer score stays an ANSWER score: out of "
+      "ten, reasoned, no path into a competency rating, recorded with who "
+      "saw it.")
 
 
 # --------------------------------------------------------------- live smoke
