@@ -253,18 +253,63 @@ try:
                                         {"source": "resume", "band": "hard"}),
                   InterviewError))
 
-    print("\n10. The band cannot be changed once the candidate was probed")
+    print("\n10. The band switches freely, and the record follows it")
+    # The interviewer changes depth mid-interview as often as the
+    # conversation needs it. What the record has to keep is not a single
+    # fixed band -- it never could, once switching is allowed -- but the
+    # SEQUENCE, so "at what difficulty was this candidate probed" still has
+    # an answer.
     iv2 = Interview("INT-G2", "cand-2", GUIDE, ["alice"], store_root=store)
     iv2.add_probes([probe("first")], {"source": "resume", "band": "easy"})
-    err = _err(lambda: iv2.add_probes([probe("second")],
-                                      {"source": "resume", "band": "super_hard"}))
-    check("regenerating at another band is refused",
-          isinstance(err, InterviewError))
-    check("and the refusal explains what the record would lose",
-          "difficulty" in str(err), str(err)[:80])
-    check("more probes at the SAME band are fine",
-          iv2.add_probes([probe("second")],
-                         {"source": "resume", "band": "easy"}) == 1)
+    for b in ("super_hard", "medium", "easy", "hard"):
+        check(f"switching to {b} is permitted",
+              iv2.add_probes([probe(f"at {b}")],
+                             {"source": "resume", "band": b}) == 1)
+    check("the current band is the one last set",
+          iv2.difficulty_band == "hard", iv2.difficulty_band)
+    check("and every band it ran at is in order",
+          [h["band"] for h in iv2.band_history]
+          == ["easy", "super_hard", "medium", "easy", "hard"],
+          str([h["band"] for h in iv2.band_history]))
+    check("each switch records what it came from",
+          iv2.band_history[1]["from"] == "easy"
+          and iv2.band_history[-1]["from"] == "easy")
+    check("every switch is in the audit trail",
+          [e["event"] for e in iv2.events].count("band_changed") == 4)
+    check("re-running at the SAME band adds no phantom switch",
+          iv2.add_probes([probe("again")],
+                         {"source": "resume", "band": "hard"}) == 1
+          and len(iv2.band_history) == 5, str(len(iv2.band_history)))
+    check("each probe keeps the band it was generated under",
+          {r["band"] for r in iv2.probe_runs}
+          == {"easy", "super_hard", "medium", "hard"},
+          str(sorted({r["band"] for r in iv2.probe_runs})))
+
+    # A CV-derived question set is REPLACED on a switch, which the
+    # interviewer chose -- but each surviving question still says which
+    # depth it was written at.
+    iv3 = Interview("INT-G3", "cand-3", GUIDE, ["alice"], store_root=store,
+                    cv_derived=True)
+    iv3.set_questions([{"text": "easy one", "competency_id": COMP,
+                        "grounded_in": "x", "listen_for": "y",
+                        "if_thin": "z", "id": "g1"}],
+                      {"source": "resume-interview", "band": "easy"})
+    iv3.set_questions([{"text": "hard one", "competency_id": COMP,
+                        "grounded_in": "x", "listen_for": "y",
+                        "if_thin": "z", "id": "g1"}],
+                      {"source": "resume-interview", "band": "super_hard"})
+    check("the question set is replaced, not appended",
+          len(iv3.generated_questions) == 1
+          and iv3.generated_questions[0]["text"] == "hard one")
+    check("and the question carries its own band",
+          iv3.generated_questions[0]["band"] == "super_hard")
+    iv3.save()
+    b3 = Interview.load("INT-G3", GUIDE, store_root=store)
+    check("band history survives a round trip",
+          [h["band"] for h in b3.band_history] == ["easy", "super_hard"])
+    check("the summary reports every band used, not just the last",
+          b3.summary(force=True)["question_set"]["bands_used"]
+          == ["easy", "super_hard"])
 
     print("\n11. Two candidates probed differently is reported, not hidden")
     iv2.difficulty_band = "easy"
@@ -460,12 +505,177 @@ err = _err(lambda: probes_from_resume("x" * 400, GUIDE, "extremely_hard"))
 check("an unknown band raises rather than defaulting",
       isinstance(err, GenerationError) and "unknown difficulty band" in str(err))
 
+print("\n18. A read of an answer cannot carry a score")
+# The feature most able to destroy this project quietly, and for a reason the
+# other three do not share: it is USEFUL. An interviewer outside the
+# candidate's field genuinely cannot hear an unbacked claim in real time, so
+# the pressure is always towards letting the model say a little more. The
+# checks below are where "a little more" stops.
+from interview.generate import (ASSESS_RULES, DEPTH_LABELS, _assess_schema,
+                                _safe_prose, assess_answer)
+
+sch = _assess_schema(3)
+read_props = sch["properties"]["read"]["properties"]
+cq = sch["properties"]["counter_questions"]["items"]
+
+
+def _numeric_fields(node, path=""):
+    """Every numeric leaf anywhere in the schema. There must be none."""
+    found = []
+    if isinstance(node, dict):
+        if node.get("type") in ("number", "integer"):
+            found.append(path)
+        for k, v in node.items():
+            found += _numeric_fields(v, f"{path}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            found += _numeric_fields(v, f"{path}[{i}]")
+    return found
+
+
+nums = _numeric_fields(sch)
+check("the schema has no numeric field anywhere -- nowhere to put a score",
+      not nums, ", ".join(nums) or "none")
+check("and no field named like a rating",
+      not any(k in read_props or k in cq["properties"] for k in
+              ("score", "rating", "anchor", "anchor_level", "level", "verdict",
+               "recommendation", "hire", "seniority", "rank", "percentile")),
+      ", ".join(sorted(set(read_props) | set(cq["properties"]))))
+check("depth is a closed set of WORDS, not a scale",
+      read_props["depth"]["type"] == "string"
+      and set(read_props["depth"]["enum"]) == set(DEPTH_LABELS))
+check("the read must say what is asserted as well as what is supported",
+      {"supported", "asserted", "missing"} <= set(read_props))
+check("a counter-question is aimed at a competency and names its target",
+      {"competency_id", "text", "targets"} <= set(cq["required"]))
+check("counter-questions are capped",
+      sch["properties"]["counter_questions"]["maxItems"] == 3)
+check("the rules tell the model not to apply the anchors",
+      "do not place them on the anchors" in ASSESS_RULES.lower())
+
+print("\n19. The read's prose is filtered too, and the filter is visible")
+# The questions were always filtered. The prose was the new hole: a line
+# reading "they mentioned their second child" reaches the panel's screen just
+# as a question would, and once read it cannot be unread.
+kept, withheld = _safe_prose([
+    "Explained the lock contention with p99 numbers",
+    "Mentioned taking maternity leave during the migration",
+    "Did not say what the fix cost",
+])
+check("a line naming a protected topic is withheld", len(kept) == 2)
+check("and the reason is kept", withheld
+      and "gender" in withheld[0]["reason"] or "family" in withheld[0]["reason"],
+      withheld[0]["reason"] if withheld else "nothing withheld")
+check("the technical lines survive",
+      any("lock contention" in k for k in kept)
+      and any("fix cost" in k for k in kept))
+kept2, w2 = _safe_prose(["", None, "   "])
+check("empty lines are dropped without being called a refusal",
+      kept2 == [] and w2 == [])
+
+print("\n20. Too short an answer is not read at all")
+short, meta = assess_answer(None, "Yeah, we used Kafka for that.", GUIDE,
+                            "medium")
+check("no request is made for two sentences", short is None)
+check("and the reason says so rather than reading nothing",
+      "not enough" in (meta.get("skipped") or ""), meta.get("skipped"))
+check("an unknown band is refused before any request",
+      isinstance(_err(lambda: assess_answer(None, "x" * 400, GUIDE, "brutal")),
+                 GenerationError))
+
+print("\n21. A read is stored beside the ratings, never inside one")
+store = tempfile.mkdtemp()
+try:
+    iv = Interview("INT-A1", "cand-a", GUIDE, ["alice", "bob"],
+                   store_root=store)
+    assessment = {
+        "read": {"depth": "shallow", "depth_label": "stayed on the surface",
+                 "summary": "Named the technology, not the reasoning.",
+                 "supported": [], "asserted": ["that Kafka was necessary"],
+                 "missing": ["what the alternative cost"],
+                 "inconsistencies": [], "transcription_caveat": "",
+                 "not_a_rating": "no score"},
+        "counter_questions": [
+            {"competency_id": COMP, "text": "What broke when you tried it "
+                                            "without the queue?",
+             "targets": "that Kafka was necessary",
+             "listen_for": "a specific failure", "why": "tests the claim"}],
+    }
+    rec = iv.add_assessment(assessment, {
+        "band": "hard", "question_id": Q1, "requested_by": "alice",
+        "served_by_model": "test-model", "request_id": "req-1",
+        "answer_chars": 400, "withheld_from_read": []})
+
+    check("the read is recorded", len(iv.assessments) == 1)
+    check("its counter-question became a real, askable suggestion",
+          len(iv.suggestions) == 1 and iv.suggestions[0]["counter"] is True)
+    check("nobody has a rating as a result",
+          not any(m.ratings for m in iv.panel.values()))
+
+    # The invariant, stated as an executable check: there is no path from a
+    # read to a score. If someone later adds one, this is where it fails.
+    check("no score reached the panel from the read",
+          not any("score" in str(a.get("read", {})) for a in iv.assessments)
+          or "not_a_rating" in str(iv.assessments[0]["read"]))
+    flat = json.dumps(iv.assessments)
+    check("and the stored read carries no numeric verdict",
+          not any(k in flat for k in ('"score"', '"rating"', '"anchor_level"')))
+
+    # Rating still requires a human, an anchor and evidence -- unchanged.
+    iv.rate("alice", COMP, GUIDE.competency(COMP).scale()[0],
+            "said they used Kafka, could not say what it cost")
+    check("a human rating is still what it was",
+          iv.panel["alice"].ratings[COMP].evidence.startswith("said they"))
+
+    # Asked before locking, so it could have informed the rating. Recorded
+    # either way, which is the point.
+    check("the read records who asked and that they had not locked",
+          rec["requested_by"] == "alice" and rec["after_lock"] is False)
+    # Locking needs every competency rated, so the rest go in as
+    # not_assessed -- which is the engine's own rule, not a workaround.
+    for c in GUIDE.competencies:
+        if c.id not in iv.panel["alice"].ratings:
+            iv.rate("alice", c.id, NOT_ASSESSED, "not covered in this answer")
+    iv.lock("alice")
+    rec2 = iv.add_assessment(assessment, {"band": "hard",
+                                          "requested_by": "alice"})
+    check("a read requested after locking is marked as such",
+          rec2["after_lock"] is True)
+
+    ev = [e["event"] for e in iv.events]
+    check("both reads are in the audit trail",
+          ev.count("answer_assessed") == 2, ", ".join(ev))
+    check("and the egress is named in it",
+          any("Gemini" in str(e.get("detail", {}).get("egress", ""))
+              for e in iv.events if e["event"] == "answer_assessed"))
+
+    # Round trip: a read that vanishes on reload cannot answer "what was on
+    # the rater's screen", which is the only reason to store it.
+    iv.save()
+    back = Interview.load("INT-A1", GUIDE, store_root=store)
+    check("reads survive a save/load round trip", len(back.assessments) == 2)
+    check("so do their counter-questions", len(back.suggestions) == 2)
+
+    summ = iv.summary(force=True)
+    ar = summ["answer_reads"]
+    check("the summary declares that reads were used", ar["used"] is True)
+    check("it counts them and their counter-questions",
+          ar["count"] == 2 and ar["counter_questions"] == 2)
+    check("it counts the ones requested after a lock", ar["after_lock"] == 1)
+    check("and says in the record itself that they carry no score",
+          "NO score" in ar["note"])
+    check("no competency row gained a score from the read",
+          all(r["scores"].get("bob") is None for r in summ["competencies"]))
+finally:
+    shutil.rmtree(store)
+
 print()
 if failures:
     print(f"FAIL — {len(failures)} check(s): {', '.join(failures)}")
     sys.exit(1)
 print("PASS — generated probes stay probes: unrated, filtered, traceable, "
-      "and consent-gated.")
+      "and consent-gated. A read of an answer stays a read: no score, no "
+      "path to one, recorded with who saw it.")
 
 
 # --------------------------------------------------------------- live smoke
@@ -511,6 +721,44 @@ if "--live" in sys.argv:
     for f in items:
         print(f"    - {f['text']}")
         print(f"      because: {f['why']}")
+
+    # The read. Live because the offline half cannot test the one thing that
+    # matters about it: whether the model actually separates a backed claim
+    # from an asserted one, or just reshuffles the answer into three lists.
+    # Read the `asserted` list against the answer above -- "I added a queue
+    # and that fixed it" is asserted; the 503s and the lock contention are
+    # supported. If those land in the wrong lists the prompt is wrong, and no
+    # schema check will tell you.
+    print("\n  the read on that same answer:")
+    a_out, meta = assess_answer(GUIDE.questions[1], answer, GUIDE, "hard")
+    if a_out is None:
+        print(f"    skipped: {meta.get('skipped')}")
+    else:
+        r = a_out["read"]
+        print(f"    depth: {r['depth']} ({r['depth_label']}), "
+              f"{meta['seconds']}s")
+        print(f"    {r['summary']}")
+        for label, key in (("supported", "supported"),
+                           ("asserted ", "asserted"),
+                           ("missing  ", "missing"),
+                           ("does not add up", "inconsistencies")):
+            for line in r[key]:
+                print(f"      {label}: {line}")
+        if r["transcription_caveat"]:
+            print(f"    caveat: {r['transcription_caveat']}")
+        if meta.get("withheld_from_read"):
+            print(f"    WITHHELD {len(meta['withheld_from_read'])} line(s): "
+                  f"{[w['reason'] for w in meta['withheld_from_read']]}")
+        print(f"    {len(a_out['counter_questions'])} counter-question(s):")
+        for c in a_out["counter_questions"]:
+            print(f"      - {c['text']}")
+            print(f"        tests: {c['targets']}")
+        # The assertion that actually matters here, checked on live output
+        # rather than on a fixture: nothing came back that could be a score.
+        flat = json.dumps(a_out)
+        for forbidden in ('"score"', '"rating"', '"anchor_level"', '"rank"'):
+            assert forbidden not in flat, f"live response contained {forbidden}"
+        print("    [ok] the live response carries no score field")
 
 
 # ------------------------------------------------------- provider switching

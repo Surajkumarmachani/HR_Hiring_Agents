@@ -61,6 +61,25 @@
         <div id="suggestOut"></div>
       </div>
 
+      <!-- The read on the answer. Below "ask next" rather than above it,
+           because when both are on screen the question is the thing you say
+           out loud in the next few seconds and the read is what you consult
+           if you want to know why. -->
+      <div class="sec judge" id="assesssec" hidden
+           style="--sec: var(--s-gaze)">
+        <header>read on that answer
+          <span class="badge" id="depthBadge" hidden></span></header>
+        <div class="mic-row">
+          <button class="ghost" id="assessBtn">Judge the answer</button>
+        </div>
+        <p class="hint" id="assessMsg" style="padding:0 11px 8px">Reads back
+          what they just said — which claims they backed up and which they
+          only asserted — and offers the questions that would test them.
+          <b>It carries no score.</b> The rating is yours, against the
+          anchors.</p>
+        <div id="assessOut"></div>
+      </div>
+
       <div id="workQuestions"></div>
     </div>
   </div>
@@ -105,10 +124,9 @@
         <button class="ghost" id="cvUpload">Upload CV</button>
         <span class="hint" id="cvMsg"></span>
       </div>
-      <p class="hint" id="bandNote">Pick the depth. Set this from the
-        <em>role</em>, before you read the CV — choosing it per candidate is
-        how an impression of someone becomes their difficulty, and then their
-        score.</p>
+      <p class="hint" id="bandNote">Pick the depth. You can change it at any
+        point in the interview — switching rebuilds the questions at the new
+        depth, and you can switch back.</p>
       <div class="row" id="bandRow"></div>
       <span class="err" id="genErr"></span>
       <div id="genOut"></div>
@@ -670,6 +688,11 @@ function renderPhase() {
 
   $("#rating").hidden = !ready;
   $("#suggestsec").hidden = phase !== "questions";
+  // Same gate as the suggestion panel: both read the candidate's speech, so
+  // both are meaningless until there is a question set to be answering.
+  const gen = S.generation || {};
+  $("#assesssec").hidden = phase !== "questions"
+    || !gen.enabled || gen.assess_answers === false || !gen.consented;
   if (phase !== "questions") $("#qlist").innerHTML = "";
 
   if (phase === "cv") {
@@ -679,6 +702,7 @@ function renderPhase() {
   }
   if (phase === "questions") renderGenerated();
   renderSuggestions();
+  renderAssessment();
 }
 
 // The generated set, in the order it should be asked. Each question carries
@@ -841,6 +865,129 @@ async function suggest(auto) {
   }
 }
 
+// ---- the read on an answer -------------------------------------------
+// Deliberately NOT automatic, unlike "ask next". The suggestion panel fires
+// on its own because the value of a next question decays in seconds. A read
+// does not: it is consulted when the interviewer wants to know whether an
+// answer they could not evaluate actually held up. Firing it on every pause
+// would put a machine's account of the candidate on the screen continuously,
+// unasked, throughout the interview -- which is how it stops being a tool
+// for listening and becomes the thing being rated.
+// Amber where there is something left to get, neutral where there is not.
+// Deliberately NOT a red-to-green ramp across the five values: that is a
+// five-point quality scale in everything but name, sitting inches from the
+// actual rating scale, and an interviewer who reads a red badge and then
+// scores that competency low has been handed the score. Amber here means
+// "there is more in this answer if you press" -- an instruction to the
+// interviewer -- not "this candidate is weak".
+const DEPTH_CLASS = {
+  no_answer: "warn", shallow: "warn", partial: "warn",
+  substantive: "none", exceptional: "none",
+};
+
+function renderAssessment() {
+  const list = S.assessments || [];
+  const a = list[list.length - 1];
+  const badge = $("#depthBadge");
+  if (!a) {
+    badge.hidden = true;
+    $("#assessOut").innerHTML = "";
+    return;
+  }
+  const r = a.read || {};
+  badge.hidden = !r.depth_label;
+  badge.className = "badge " + (DEPTH_CLASS[r.depth] || "off");
+  badge.textContent = r.depth_label || "";
+
+  const bullets = (title, items, cls) => (items && items.length) ? `
+    <div class="jgroup ${cls}"><b>${title}</b>
+      <ul>${items.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "";
+
+  const counters = (a.counter_question_ids || [])
+    .map(id => (S.suggestions || []).find(sg => sg.id === id))
+    .filter(Boolean);
+
+  $("#assessOut").innerHTML = `
+    <div class="card judged">
+      ${r.transcription_caveat ? `<p class="hint warn">${
+        esc(r.transcription_caveat)}</p>` : ""}
+      ${r.summary ? `<p class="jsum">${esc(r.summary)}</p>` : ""}
+      ${bullets("They backed up", r.supported, "sup")}
+      ${bullets("Asserted, not backed up", r.asserted, "ass")}
+      ${bullets("Still missing for the anchors", r.missing, "mis")}
+      ${bullets("Does not add up", r.inconsistencies, "inc")}
+      <p class="hint jnot">No score here, and none is implied — this says what
+        the answer contained, not what it was worth. You rate against the
+        anchors.${a.after_lock ? " You had already locked when you asked for"
+        + " this, so it cannot have shaped your ratings." : ""}</p>
+    </div>
+    ${counters.length ? `
+    <div class="jcounters"><b>Counter-questions — these test the claims</b>
+      ${counters.map(c => `
+        <div class="card sug${c.asked ? " asked" : ""}">
+          <h3>${esc(c.text)}</h3>
+          ${c.targets ? `<p class="hint">tests: ${esc(c.targets)}</p>` : ""}
+          <div class="listen"><b>Listen for</b>${
+            esc(c.listen_for || "")}</div>
+          <p class="hint">evidence for: ${esc(c.competency_id)}${
+            c.why ? ` &middot; ${esc(c.why)}` : ""}</p>
+          <div class="row"><button class="ghost mark" data-q="${c.id}" ${
+            c.asked ? "disabled" : ""}>${
+            c.asked ? "Asked" : "Mark as asked"}</button></div>
+        </div>`).join("")}
+    </div>` : `<p class="hint" style="padding:0 11px 11px">No
+      counter-questions — the model found nothing in that answer worth
+      pressing on.</p>`}`;
+
+  document.querySelectorAll("#assessOut .mark").forEach(b => {
+    b.onclick = () => markAsked(b.dataset.q);
+  });
+}
+
+let assessInFlight = false;
+
+$("#assessBtn").onclick = () => judge();
+
+async function judge() {
+  if (assessInFlight) return;
+  assessInFlight = true;
+  const btn = $("#assessBtn");
+  btn.disabled = true;
+  // Twenty-odd seconds, measured. Said up front, because a button that
+  // looks stuck is a button people press again.
+  $("#assessMsg").textContent =
+    "reading what they said\u2026 this takes around 20 seconds";
+  try {
+    // The question currently in play, so the read can aim at the right
+    // competencies. Absent is fine -- the answer is then read on its own.
+    const asked = S.asked || [];
+    const qid = asked.length ? asked[asked.length - 1] : null;
+    const r = await fetch(`/api/sessions/${SID}/questions/assess`, {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({who: WHO, t: T, question_id: qid})});
+    const d = await r.json();
+    if (!r.ok) {
+      $("#assessMsg").textContent = r.status === 501
+        ? "generation is not configured on this server"
+        : (d.detail || "could not read that answer");
+      return;
+    }
+    if (!d.assessment) {
+      $("#assessMsg").textContent = d.reason || "not enough of an answer yet";
+      return;
+    }
+    const w = (d.meta || {}).withheld_from_read;
+    $("#assessMsg").innerHTML = "What the answer contained \u2014 not what it"
+      + " was worth. <b>You rate.</b>"
+      + (w ? ` <span class="err">${w} line${w > 1 ? "s" : ""} withheld for`
+           + ` naming a protected topic.</span>` : "");
+    await reload();
+  } finally {
+    assessInFlight = false;
+    btn.disabled = false;
+  }
+}
+
 function renderQuestions() {
   $("#qlist").innerHTML = S.questions.map((q, i) => `
     <div class="card"><h3>${i + 1}. ${esc(q.text)}</h3>
@@ -887,22 +1034,26 @@ function renderGeneration() {
     ? `${cv.filename} · ${cv.chars} characters of text`
     : "PDF, .docx or plain text. A scanned PDF has no text to read.";
 
-  const locked = g.difficulty_band;
+  // Every band stays live for the whole interview. Switching rebuilds the
+  // question set at the new depth, as often as the interviewer wants -- the
+  // one in force is marked, the others are one press away.
+  const current = g.difficulty_band;
   $("#bandRow").innerHTML = Object.entries(g.bands).map(([key, b]) => `
     <button class="ghost band" data-band="${key}"
-      aria-pressed="${locked === key}"
-      ${locked && locked !== key ? "disabled" : ""}
+      aria-pressed="${current === key}"
       title="${esc(b.brief)}">${esc(b.label)}</button>`).join("");
   document.querySelectorAll("#bandRow .band").forEach(b => {
     b.onclick = () => generate(b.dataset.band, b);
   });
 
-  if (locked) {
-    // The band cannot change once probes exist: the record would then have no
-    // answer to "what difficulty did this candidate actually face".
+  if (current) {
+    const used = g.bands_used || [];
+    const label = k => (g.bands[k] || {}).label || k;
     $("#bandNote").textContent =
-      `Built at ${locked}. That is fixed for this interview now — the record ` +
-      `has to be able to say which difficulty this candidate faced.`;
+      `Now at ${label(current)}. Press any band to rebuild the questions at `
+      + `that depth — it replaces the set, and you can switch back.`
+      + (used.length > 1
+         ? ` So far: ${used.map(label).join(" \u2192 ")}.` : "");
   }
   if (g.runs && g.runs.length) {
     $("#genOut").innerHTML = `<p class="hint">${g.runs.length} generation${

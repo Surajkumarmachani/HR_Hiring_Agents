@@ -81,7 +81,7 @@ rest.
 | **Pulse from video** | An estimate of your heart rate from small colour changes in the video | The same |
 | **Voice measurements** | Pitch, pace and pauses in your speech | The same |
 | **A transcript** | Your words, written down, so your interviewer can quote you accurately in their notes | Making the interviewer's evidence accurate rather than remembered |
-| **Questions from your CV** | If you have sent a CV, using it to prepare follow-up questions about the work you described | So you are asked about what you have actually done, rather than only general questions |
+| **Questions from your CV** | If you have sent a CV, using it to prepare follow-up questions about the work you described — and, during the interview, reading your answers back to your interviewer to point out which parts you explained in detail and which you did not, so they can ask a better next question | So you are asked about what you have actually done, rather than only general questions, and so an interviewer who does not work in your field can still follow what you are describing |
 
 ### What we do not do with any of it
 
@@ -111,9 +111,19 @@ suggested questions for your interviewer to consider asking.
 - We remove your email address, phone number and any profile links first.
 - Your name, your employers and the places you mention do remain in the text,
   because the questions are about that experience.
-- The service returns **questions only**. It does not score you, rank you or
-  assess you, and it is not told to.
-- Your interviewer decides which, if any, to ask.
+- What comes back is **questions, and a description of what you just said** —
+  which parts of your answer you explained in detail, which you stated without
+  explaining, and what your interviewer might ask to find out more. It is
+  written for an interviewer who may not work in your field.
+- **It does not score you, rank you, or say how good your answer was.** It is
+  not asked to and it is not able to: there is no rating in what comes back,
+  and your interviewer's scores are their own, made against the same written
+  standards used for every candidate for this role.
+- Your interviewer decides which, if any, of the questions to ask, and whether
+  to agree with any of it.
+- If it mentions anything about you personally rather than about your work,
+  that line is removed before your interviewer sees it, and they are told a
+  line was removed.
 - **[PROVIDER NAME] keeps this data for [RETENTION PERIOD] and does not use it
   to train their systems.**
 
@@ -207,7 +217,8 @@ I agree to the following, and only the following:
 - ☐ **Voice measurements** — pitch, pace, pauses
 - ☐ **A transcript of what I say**
 - ☐ **Questions prepared from my CV**, including sending my CV text and my
-  answers to [PROVIDER NAME] as described above
+  answers to [PROVIDER NAME] as described above, and having my answers read
+  back to my interviewer to help them decide what to ask next
 
 ☐ I agree to none of the above, and understand my interview goes ahead as normal.
 
@@ -261,6 +272,31 @@ than buried.
    it do so.
 10. **Does anything here trigger a Data Protection Impact Assessment**, and does
    the biometric element require Significant Data Fiduciary treatment?
+11. **Reading the candidate's answers back to the interviewer.** This is the
+   newest item and the one closest to a line we said we would not cross. The
+   model is sent what the candidate just said and returns a description of it
+   — which claims they supported with detail, which they only asserted, what
+   is still missing — plus counter-questions aimed at the gaps. It returns no
+   score, no ranking and no anchor level; the schema has no field for one and
+   `Interview.rate()` cannot be reached from it.
+
+   Our position is that this is decision *support* for the interviewer's
+   listening and not automated decision-making: a human asks for it, a human
+   reads it, a human chooses the questions, and a human scores against
+   anchors that are identical for every candidate. The counter-argument we
+   cannot dismiss is that an interviewer who is told "they asserted X without
+   explaining it" and then rates that competency low has, in substance, been
+   given a finding rather than a question — and that the record's own
+   `answer_reads.after_lock` count is an admission that we think the timing
+   matters.
+
+   Two questions for counsel. Does this need disclosing as profiling, or as
+   an input to a decision, beyond the description now in the candidate text?
+   And is our mitigation — no score in the payload, the reads stored beside
+   the ratings with who saw them and when, and `config.generation.
+   assess_answers` to switch the whole thing off — sufficient, or does this
+   feature need to be off by default until WP8b can measure whether panels
+   who use it rate differently from panels who do not?
 
 ## What this notice does not cover
 

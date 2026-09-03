@@ -37,9 +37,27 @@ than to permit it.
 
 WHAT IS NEVER GENERATED
 -----------------------
-No competencies, no anchors, no scores, no summary of the CV, no assessment
-of the candidate, no seniority estimate, no "fit". The model is asked for
-questions and the schema will not accept anything else.
+No competencies, no anchors, no scores, no seniority estimate, no "fit", no
+hire recommendation, no summary of the CV. The schemas below have no field
+any of those could go in, which is a stronger guarantee than an instruction
+in a prompt.
+
+`assess_answer` is the one call that reads a candidate's words back rather
+than only asking for questions, and it is worth being exact about where the
+line falls, because it is a line this module could cross without anybody
+noticing. It may say what the ANSWER contained: which claims came with a
+mechanism or a number behind them, which were only asserted, what the anchors
+would still need. It may not say what the answer is WORTH -- no score, no
+anchor level, no comparison to another candidate.
+
+That distinction is the whole feature rather than a hedge around it. An
+interviewer outside the candidate's field cannot hear the difference between
+a fluent answer and a deep one in real time; both sound confident and use the
+right words. Telling them which claims went unbacked is help with LISTENING,
+and it lands as a better question. Telling them the answer was a 3 is doing
+the rating, and a rater who then types 3 has not made the independent
+judgement the whole process is defended on. See ASSESS_RULES and
+_assess_schema, and config.generation.assess_answers to switch it off.
 
 EGRESS
 ------
@@ -315,6 +333,132 @@ def _followup_schema(max_items):
     }
 
 
+def _assess_schema(max_items):
+    """A read of one answer, plus the questions that would test it.
+
+    THE FIELD THIS SCHEMA DOES NOT HAVE
+    -----------------------------------
+    A score. There is no number anywhere in here and no anchor level, because
+    the moment a model can put a candidate on the guide's scale it has made
+    the rating and the human has become the person who agreed with it. What
+    it may do is describe the ANSWER: which claims came with a mechanism,
+    which were only asserted, what the anchors still need. That is the thing
+    an interviewer outside the candidate's field cannot do for themselves,
+    and it is not the same act as scoring them.
+
+    `depth` is the one judgement here, and it is a judgement about the answer
+    rather than about the person: it is the graded form of `answer_was_thin`
+    in `_next_schema`, which has always been generated and has never been
+    rated. It is deliberately a word and not a 1-5, so that it cannot be
+    read off the screen and typed into the scale.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "read": {
+                "type": "object",
+                "properties": {
+                    "depth": {
+                        "type": "string",
+                        "enum": ["no_answer", "shallow", "partial",
+                                 "substantive", "exceptional"],
+                        "description": "how far into the work this answer "
+                                       "actually went. About the answer, not "
+                                       "the candidate, and never a score.",
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "one or two lines on what the answer "
+                                       "actually contained, for an "
+                                       "interviewer who may not know the "
+                                       "domain. Descriptive, not evaluative.",
+                    },
+                    "supported": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "claims the candidate backed with a "
+                                       "mechanism, a number, a trade-off or "
+                                       "an outcome. Quote or closely "
+                                       "paraphrase what they said.",
+                    },
+                    "asserted": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "claims they stated but did not back. "
+                                       "These are what the counter-questions "
+                                       "are for.",
+                    },
+                    "missing": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "what the anchors for the competencies "
+                                       "in play would still need in order to "
+                                       "be rated on this evidence",
+                    },
+                    "inconsistencies": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "places the answer contradicts itself "
+                                       "or does not add up. Empty is the "
+                                       "normal case -- do not manufacture "
+                                       "one. A garbled transcript is not an "
+                                       "inconsistency.",
+                    },
+                    "transcription_caveat": {
+                        "type": "string",
+                        "description": "empty unless the transcript is too "
+                                       "broken to read confidently, in which "
+                                       "case say so here rather than reading "
+                                       "it anyway",
+                    },
+                },
+                "required": ["depth", "summary", "supported", "asserted",
+                             "missing", "inconsistencies",
+                             "transcription_caveat"],
+                "additionalProperties": False,
+            },
+            "counter_questions": {
+                "type": "array",
+                "minItems": 0,
+                "maxItems": max_items,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "competency_id": {"type": "string"},
+                        "text": {
+                            "type": "string",
+                            "description": "the counter-question, as it would "
+                                           "be asked aloud. One question.",
+                        },
+                        "targets": {
+                            "type": "string",
+                            "description": "the specific thing in the answer "
+                                           "this tests -- the claim, the gap "
+                                           "or the inconsistency",
+                        },
+                        "listen_for": {
+                            "type": "string",
+                            "description": "what an answer that holds up "
+                                           "sounds like, and what an answer "
+                                           "that does not sounds like",
+                        },
+                        "why": {
+                            "type": "string",
+                            "description": "one line for the interviewer on "
+                                           "why this is worth the time",
+                        },
+                    },
+                    "required": ["competency_id", "text", "targets",
+                                 "listen_for", "why"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["read", "counter_questions"],
+        "additionalProperties": False,
+    }
+
+
 # --------------------------------------------------------------- prompts
 def _guide_context(guide):
     """The stable half of the prompt: the role, its competencies, its anchors.
@@ -450,6 +594,91 @@ Never suggest a question already asked. Never ask about the person -- age,
 family, health, nationality, religion, caste, gender, politics, visa status,
 pay, or career gaps. Do not assess the candidate; suggest a question.
 """
+
+
+ASSESS_RULES = """\
+You are reading back one answer to the interviewer who just heard it, while
+the candidate is still in the room.
+
+WHY THIS IS NEEDED
+The interviewer may not share the candidate's technical background. From the
+outside, a fluent answer and a deep answer sound the same: both are confident,
+both use the right words, both last ninety seconds. The difference is whether
+the claims came with a mechanism, a number, a trade-off or an outcome behind
+them -- and someone outside the domain cannot hear that difference in real
+time. That is the whole job here.
+
+WHAT YOU ARE NOT DOING
+You are not scoring the candidate. Do not place them on the anchors, do not
+say which anchor level the answer reaches, do not say whether they should be
+hired, do not estimate their seniority, do not compare them to anyone. The
+anchors are above so you can say what evidence is still MISSING for them --
+not so you can apply them. A rater who reads your output and then scores what
+you implied has not made an independent judgement, and the whole defence of
+this process is that they did.
+
+So: describe the answer, name what is backed and what is only asserted, say
+what is still missing, and write the questions that would settle it. The
+score is theirs.
+
+HOW TO READ AN ANSWER
+`supported` is for claims that came with something behind them -- how it
+worked, what it cost, what broke, what the number was. Quote or closely
+paraphrase what they actually said.
+`asserted` is for claims stated as fact with nothing behind them. "We cut
+latency by using a cache" is asserted; "we cut p99 from 400ms to 40ms because
+the hot key set fit in memory" is supported. Be exact about which is which:
+this list is what the counter-questions are aimed at, so a claim put here
+wrongly sends the interviewer to press on something the candidate already
+answered.
+`missing` is what the anchors above would still need. Write it as the gap, not
+as a verdict.
+`inconsistencies` is usually empty and should be. Two numbers that cannot both
+be true, an outcome that does not follow from the mechanism, a timeline that
+does not fit. A transcription error is NOT an inconsistency -- the transcript
+is live and imperfect, and treating a mangled word as a contradiction sends
+the interviewer to challenge something the candidate never said.
+
+COUNTER-QUESTIONS
+A counter-question TESTS a claim rather than asking for more of it. It is the
+question whose answer differs depending on whether the candidate actually did
+the work: what would have broken if they had chosen the other way, what the
+number was, what they saw when it failed, why the obvious simpler approach
+was not enough. Aim each one at something in `asserted`, `missing` or
+`inconsistencies`, and say which in `targets`.
+
+Return none if the answer already contains what the anchors need. An empty
+list is a useful answer and better than sending the interviewer to press on
+an answer that was already complete.
+
+Never challenge the person, only the claim. A counter-question is not a trap
+and not a cross-examination: the candidate should be able to answer it well
+if they did the work. Never ask about age, family, health, nationality,
+religion, caste, gender, politics, visa status, pay, or career gaps.
+
+The transcript is live and may be mid-sentence or garbled. If it is too broken
+to read, say so in `transcription_caveat` and return no counter-questions
+rather than reading meaning into noise.
+"""
+
+
+def _assess_user_prompt(question, competencies, answer, band, max_n):
+    b = BANDS[band]
+    asked_block = (f"The interviewer asked:\n  {question}\n\n"
+                   if question else
+                   "The interviewer's question was not recorded; read the "
+                   "answer on its own terms.\n\n")
+    comp_block = (f"It elicits: {', '.join(competencies)}\n\n"
+                  if competencies else "")
+    return (
+        f"{asked_block}{comp_block}"
+        f"DIFFICULTY BAND: {b['label']} -- {b['brief']}\n{b['guidance']}\n\n"
+        f"Judge the answer against that band. An answer that would be "
+        f"complete at Easy may be thin at Hard, and the band is the role's, "
+        f"not this candidate's.\n\n"
+        f"Write at most {max_n} counter-questions, or none if the answer "
+        f"already holds up.\n\n"
+        f"WHAT THE CANDIDATE SAID, transcribed live\n{'=' * 41}\n{answer}")
 
 
 def _interview_user_prompt(resume, band, max_q, truncated):
@@ -1029,4 +1258,163 @@ def followups_from_answer(question, answer_text, guide, band, cfg=None):
     return kept, meta
 
 
+def _safe_prose(items):
+    """Drop read-back lines that name a protected topic. (kept, withheld).
 
+    The counter-questions go through `_clean`, which is the strict path and
+    unchanged. This is the looser one, for the model's PROSE about the
+    answer, and it exists because that prose reaches the panel's screen just
+    as a question would: a line reading "they mentioned taking parental
+    leave" is the protected topic arriving in the room by the back door, and
+    the interviewer has then read it whatever happens next.
+
+    Per-item rather than all-or-nothing, and the count is reported. The
+    patterns were written for questions, so on technical prose some of them
+    over-match -- "familiar with" trips the family pattern, "the age of the
+    index" trips age. The cost of that is a dropped bullet, which is why the
+    number withheld is returned and shown rather than swallowed. Loosening
+    the patterns instead would loosen them for the questions too, and those
+    get asked out loud.
+    """
+    kept, withheld = [], []
+    for item in items or []:
+        text = (item or "").strip()
+        if not text:
+            continue
+        topic = offending_topic(text)
+        if topic:
+            withheld.append({"reason": f"mentions {topic}"})
+            continue
+        kept.append(text)
+    return kept, withheld
+
+
+DEPTH_LABELS = {
+    "no_answer": "no answer yet",
+    "shallow": "stayed on the surface",
+    "partial": "partly backed up",
+    "substantive": "backed up",
+    "exceptional": "went well past what was asked",
+}
+
+
+def assess_answer(question, answer_text, guide, band, cfg=None):
+    """Read one answer back to the interviewer, with the questions that test it.
+
+    Returns (assessment, meta). `assessment` is None when there is not yet
+    enough of an answer to read.
+
+    NOT A RATING, and the shape of the return value is where that is
+    enforced rather than merely asserted: there is no score field for the
+    caller to find. `interview/engine.py` stores this beside the ratings and
+    never inside one, and `Interview.rate()` takes a score and evidence from
+    a human -- it has no parameter this could reach even if someone wanted it
+    to. See `_assess_schema` and `ASSESS_RULES`.
+
+    LATENCY. Measured at 22.8 s on `gemini-3.1-pro-preview` for a five-
+    sentence answer, with adaptive thinking on. That is slow with a candidate
+    in the room, and it is why this call is never automatic the way the "ask
+    next" suggestion is: the interviewer presses a button and knows they are
+    waiting, rather than having a panel populate itself twenty seconds after
+    a moment that has passed.
+
+    The thinking budget is what costs the time and it is also what buys the
+    only thing here worth having -- separating a claim that came with a
+    mechanism from one that did not. With thinking off the lists still fill,
+    which is worse than an empty panel: a supported claim filed under
+    `asserted` sends the interviewer to press on something the candidate
+    already answered, and they cannot tell from the screen that it happened.
+    So the latency is accepted rather than optimised away.
+    """
+    cfg = cfg or CONFIG.generation
+    if band not in BANDS:
+        raise GenerationError(
+            f"unknown difficulty band {band!r}. One of: {', '.join(BANDS)}")
+    if not cfg.assess_answers:
+        raise GenerationDisabled(
+            "reading answers back is switched off for this deployment "
+            "(config.generation.assess_answers). The questions and the "
+            "ratings are unaffected.")
+
+    answer = (answer_text or "").strip()
+    if len(answer) < 120:
+        # Deliberately higher than the 80 used for a follow-up. A follow-up
+        # only has to be a sensible next question; a read claims to say which
+        # claims were backed, and two sentences cannot support that claim
+        # about itself.
+        return None, {"source": "assess", "band": band, "kept": 0,
+                      "skipped": "not enough of an answer to read yet"}
+    if len(answer) > cfg.max_transcript_chars:
+        answer = answer[-cfg.max_transcript_chars:]
+
+    max_n = cfg.max_counter_questions
+    qtext = getattr(question, "text", None) or (
+        question.get("text") if isinstance(question, dict) else None)
+    comps = getattr(question, "competencies", None)
+    if comps is None and isinstance(question, dict):
+        cid = question.get("competency_id")
+        comps = (cid,) if cid else ()
+    comps = [c for c in (comps or ())
+             if c in {x.id for x in guide.competencies}]
+
+    t0 = time.time()
+    data, prov = generate_json(
+        _guide_context(guide) + "\n\n" + ASSESS_RULES,
+        _assess_user_prompt(qtext, comps, answer, band, max_n),
+        _assess_schema(max_n), cfg)
+
+    raw_read = data.get("read") or {}
+    depth = raw_read.get("depth")
+    if depth not in DEPTH_LABELS:
+        depth = None
+    summary, summary_withheld = _safe_prose([raw_read.get("summary")])
+    supported, w1 = _safe_prose(raw_read.get("supported"))
+    asserted, w2 = _safe_prose(raw_read.get("asserted"))
+    missing, w3 = _safe_prose(raw_read.get("missing"))
+    inconsistencies, w4 = _safe_prose(raw_read.get("inconsistencies"))
+    caveat, _ = _safe_prose([raw_read.get("transcription_caveat")])
+    withheld = summary_withheld + w1 + w2 + w3 + w4
+
+    kept, rejected = _clean(data.get("counter_questions", []), guide)
+    for item in kept:
+        item["counter"] = True
+        if qtext and getattr(question, "id", None):
+            item["question_id"] = question.id
+
+    read = {
+        "depth": depth,
+        "depth_label": DEPTH_LABELS.get(depth),
+        "summary": summary[0] if summary else "",
+        "supported": supported,
+        "asserted": asserted,
+        "missing": missing,
+        "inconsistencies": inconsistencies,
+        "transcription_caveat": caveat[0] if caveat else "",
+        # Said on the object itself, not only in the docs, because this
+        # travels: into the session JSON, into the panel's screen, into
+        # whatever WP6 replaces the store with. Wherever it is read, it has
+        # to arrive saying what it is not.
+        "not_a_rating": ("A read of the answer, generated to help the "
+                         "interviewer decide what to ask next. It carries no "
+                         "score and is not an input to one: every rating is "
+                         "made by a person against the guide's anchors, "
+                         "which are identical for every candidate."),
+    }
+
+    meta = {
+        "source": "assess",
+        "band": band,
+        "model": cfg.gemini_model,          # requested
+        "module_version": MODULE_VERSION,
+        "question_id": getattr(question, "id", None),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "seconds": round(time.time() - t0, 1),
+        **prov,                             # what actually served it
+        "answer_chars": len(answer),
+        "depth": depth,
+        "returned": len(data.get("counter_questions", [])),
+        "kept": len(kept),
+        "rejected": rejected,
+        "withheld_from_read": withheld,
+    }
+    return {"read": read, "counter_questions": kept}, meta

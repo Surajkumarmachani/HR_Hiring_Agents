@@ -508,6 +508,28 @@ class GenerationConfig:
 
     max_followups: int = 3
 
+    max_counter_questions: int = 3
+    """Per assessed answer. Counter-questions are the ones that TEST a claim
+    the candidate just made rather than asking for more of it, so three is
+    already more than an interviewer can put to one answer without it
+    becoming an interrogation of a single sentence."""
+
+    assess_answers: bool = True
+    """Whether an answer may be read back by the model at all.
+
+    Separate from `enabled` because it is a different decision. Generation
+    produces questions; this produces a READ of what the candidate said --
+    which claims they supported, which they only asserted, what is missing.
+    An operator may want the questions and not the read, and the read is the
+    half that most resembles an assessment, so it gets its own switch.
+
+    It is not one, and cannot become one: nothing it returns carries a score
+    or an anchor level, `interview/engine.py` never passes it to `rate()`, and
+    the schema in `interview/generate.py` has no field it could put a number
+    in. What it is for is the interviewer who does not share the candidate's
+    background and so cannot tell a deep answer from a fluent one -- see
+    `ASSESS_RULES`."""
+
     redact_contact_details: bool = True
     """Strip emails, phones and profile links before the CV is sent. They
     carry no question value, so sending them is exposure for nothing. This is

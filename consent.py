@@ -114,9 +114,17 @@ KNOWN_SIGNALS = (
     # above is a signal CAPTURED on this machine and processed on it. This one
     # is the reverse: it SENDS the candidate's CV and their answer transcript
     # to a third-party model (Google's Gemini API) so an interviewer can be
-    # handed
-    # draft follow-up questions. Nothing comes back but questions -- no score,
-    # no assessment -- and nothing generated is ever rated.
+    # handed draft follow-up questions, and -- since the answer-read feature
+    # -- a description of the answer they just gave: which claims came with
+    # detail behind them, which were only asserted, what is still missing.
+    #
+    # What comes back is questions and that description. It carries NO score,
+    # no ranking and no anchor level: the schema in interview/generate.py has
+    # no field for one, and nothing generated is ever rated. The line this
+    # holds is between helping an interviewer HEAR an answer they are not
+    # equipped to judge, and judging it for them. See
+    # config.generation.assess_answers to switch the read off and keep the
+    # questions, and docs/WP7c for what the candidate is told.
     #
     # It is on this list so that it is refusable. A subject whose record does
     # not name it cannot have their CV or their speech sent anywhere, and the

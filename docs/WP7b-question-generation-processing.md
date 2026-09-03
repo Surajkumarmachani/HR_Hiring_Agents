@@ -48,18 +48,65 @@ model id is an alias, so the two differ and the record keeps the real one.
 |---|---|---|
 | The text of the candidate's CV, contact details removed | When a panel member presses a difficulty button | Google Gemini API |
 | The candidate's answer transcript for one question (last ~6 lines, capped at `max_transcript_chars`) | When a panel member asks for follow-ups mid-answer | Google Gemini API |
+| The candidate's answer transcript (last ~8 lines, same cap) | When a panel member presses **Judge the answer** | Google Gemini API |
 | The interview guide: role, competencies, behavioural anchors, fixed questions | With each of the above, as the cached prompt prefix | Google Gemini API |
 
 **What is never sent:** video, audio, any extracted signal, the pulse
 estimate, action units, gaze, blink, pose, the candidate's name as a separate
 field, the consent record, any rating, or any interviewer note.
 
-**What comes back:** questions. The response schema
-(`interview/generate.py`) admits nothing else — no score, no assessment, no
-summary of the candidate, no seniority estimate. A returned item that names a
-competency the guide does not define, or that touches a prohibited topic, is
-dropped before any interviewer sees it, and the drop is recorded in the audit
-trail with its reason.
+**What comes back:** questions, and — from `assess_answer` only — a
+description of the answer that was just given. The response schemas
+(`interview/generate.py`) admit nothing else: no score, no ranking, no anchor
+level, no summary of the candidate as a person, no seniority estimate, no hire
+recommendation. A returned item that names a competency the guide does not
+define, or that touches a prohibited topic, is dropped before any interviewer
+sees it, and the drop is recorded in the audit trail with its reason.
+
+### The answer read, and where its line falls
+
+`assess_answer` is the one call that reads the candidate's words back rather
+than only asking for questions, and it is the closest this system comes to
+the thing it says it does not do. So, precisely:
+
+**What it may return.** Which claims in the answer came with a mechanism, a
+number or an outcome behind them; which were stated and not backed; what the
+guide's anchors would still need; where the answer does not add up; and
+counter-questions aimed at those gaps. Plus one graded word about the
+answer's depth — `shallow` through `exceptional` — which is the existing
+`answer_was_thin` boolean with more resolution, and is deliberately a word so
+that it cannot be read off the screen and typed into a 1–5 scale.
+
+**What it cannot return.** A score. There is no field for one. It is not that
+the model is asked to withhold it: `_assess_schema` has no numeric property
+anywhere, `Interview.rate()` takes a score and evidence from a named human
+and is never called from this path, and `interview/engine.py` stores the read
+in `assessments` — beside the ratings, never inside one.
+
+**Why it exists.** An interviewer who does not work in the candidate's field
+cannot hear the difference between a fluent answer and a deep one while it is
+being given; both are confident and both use the right vocabulary. Naming the
+unbacked claims is help with *listening*, and it is spent on a better next
+question. This is the same argument that justifies `listen_for` on every
+generated question, applied after the answer instead of before it.
+
+**The risk we are not claiming to have closed.** An interviewer told "they
+asserted X without explaining it" who then rates that competency low has been
+handed something that functions as a finding, whatever the payload contains.
+Three things push against that and none of them eliminates it: the read is
+requested by a human and never fires automatically, `config.generation.
+assess_answers = False` removes it while keeping the questions, and every read
+is recorded with who asked for it and whether they had already locked
+(`answer_reads.after_lock` in the summary). WP8b should measure whether panels
+using it rate differently from panels that do not. Until it has, this feature
+is an argument, not a finding.
+
+**Prose filtering.** The read's free text goes through the same prohibited-topic
+patterns as the questions, per line, and a line that trips is withheld with its
+reason rather than shown. The patterns were written for questions and
+over-match on technical prose — "familiar with" trips the family pattern — so
+the number withheld is returned to the interviewer and displayed. A filter
+nobody can see firing is a filter nobody can check.
 
 ### Redaction, stated honestly
 
@@ -84,7 +131,12 @@ Not by this document. Three mechanisms, in the code:
    template being enrolled without `face_identity_template`.
 3. Every generation writes an audit event naming the model, the difficulty
    band, what was dropped and why, and that egress occurred
-   (`interview/engine.py`, event `probes_generated` / `followups_suggested`).
+   (`interview/engine.py`, events `probes_generated`, `followups_suggested`,
+   `answer_assessed`).
+4. `config.generation.assess_answers = False` removes the answer read
+   specifically, leaving the questions. Separate from (1) because they are
+   separate decisions: an operator may want questions generated from a CV and
+   not want a model describing what the candidate said.
 
 Consequence worth stating plainly: **an operator who has not put the
 disclosure in their notice cannot turn this on**, because the consent flow will

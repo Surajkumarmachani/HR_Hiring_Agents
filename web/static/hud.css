@@ -437,3 +437,62 @@ body.hud {
   letter-spacing: .08em; text-transform: uppercase; color: var(--hud-dim);
 }
 .sugold .probe { margin-top: 6px; }
+
+/* ---- the read on an answer ------------------------------------------
+   Coloured off --s-gaze rather than --s-script, so the read and the
+   suggestion beside it are never mistaken for each other at a glance: one is
+   a question to ask, the other is an account of what was already said.
+
+   Deliberately NOT styled like the rating card. A panel that looks like the
+   scale is a panel that gets read as the score, and the entire argument for
+   showing any of this rests on the two staying visibly different things. */
+.judge { border-left-width: 3px; }
+/* Two states only, and no green. Amber says "there is more here if you
+   press"; neutral says "nothing to chase". A red-to-green ramp across the
+   five depth values would be a quality scale sitting next to the real one,
+   and the badge would then be doing the rating. */
+.judge .badge.warn { background: rgba(255, 176, 32, .16); color: var(--state-warn); }
+.judge .badge.none, .judge .badge.off {
+  background: var(--hud-panel-2); color: var(--hud-dim);
+}
+#assessOut { padding: 0 11px 11px; display: grid; gap: 10px; }
+
+.card.judged { border-left: 2px solid var(--s-gaze); }
+.jsum {
+  color: var(--hud-ink) !important; font-size: 13.5px; line-height: 1.55;
+  margin: 0 0 10px;
+}
+.jgroup { margin: 9px 0 0; padding-top: 9px; border-top: 1px solid var(--hud-rule); }
+.jgroup b {
+  display: block; font-size: 10.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--hud-dim); margin-bottom: 5px;
+}
+.jgroup ul { margin: 0; padding-left: 16px; }
+.jgroup li {
+  font-size: 13px; line-height: 1.5; color: var(--hud-dim); margin-bottom: 4px;
+}
+/* The two lists that carry the useful signal for someone outside the
+   candidate's field: what held up, and what did not. */
+.jgroup.sup b { color: var(--state-ok); }
+.jgroup.sup li { color: var(--hud-ink); }
+.jgroup.ass b, .jgroup.inc b { color: var(--state-warn); }
+.jgroup.ass li, .jgroup.inc li { color: var(--hud-ink); }
+.jgroup.mis b { color: var(--s-gaze); }
+
+/* The disclaimer is part of the component, not a footnote to it. It stays
+   legible rather than fading to --hud-faint like other hints, because the
+   one thing a reader must not carry away from this panel is that it scored
+   anyone. */
+.jnot {
+  margin: 11px 0 0 !important; padding-top: 9px;
+  border-top: 1px solid var(--hud-rule);
+  color: var(--hud-dim) !important; font-size: 12px; line-height: 1.5;
+}
+.hint.warn { color: var(--state-warn) !important; }
+
+.jcounters > b {
+  display: block; font-size: 10.5px; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--s-gaze); margin: 2px 0 8px;
+}
+.jcounters .sug { border-left-color: var(--s-gaze); margin-bottom: 10px; }
+.jcounters .sug:last-child { margin-bottom: 0; }

@@ -61,7 +61,8 @@ import subject_record
 from config import CONFIG, Config
 from interview.engine import Interview, InterviewError, NOT_ASSESSED
 from interview.generate import (BANDS, GenerationDisabled, GenerationError,
-                                NoCredential, followups_from_answer,
+                                NoCredential, assess_answer,
+                                followups_from_answer,
                                 interview_from_resume, next_question,
                                 probes_from_resume)  # noqa: F401
 from interview.model import Guide, GuideError
@@ -271,6 +272,14 @@ class Session:
         }
 
     def save(self):
+        # makedirs on every save, not only in __init__. A session directory
+        # that goes missing mid-interview -- a stray cleanup, a tmpreaper, an
+        # operator tidying out/ -- otherwise turns every subsequent save into
+        # a FileNotFoundError, and save() is on the path of consent,
+        # telemetry, upload and the candidate's own state endpoint. Losing
+        # the directory should cost the files in it, not the running
+        # interview.
+        os.makedirs(self.dir, exist_ok=True)
         with open(os.path.join(self.dir, "session.json"), "w") as fh:
             json.dump(self.to_dict(), fh, indent=2, sort_keys=True)
 
@@ -608,13 +617,23 @@ def interview_state(sid: str, who: str, t: str):
         "asked": iv.asked,
         "suggestions": iv.suggestions,
         "coverage": iv.coverage(),
+        # The reads of the candidate's answers, newest last. Sent so a page
+        # reopened mid-interview shows what the panel has already been given
+        # rather than an empty panel that implies nothing was read.
+        "assessments": iv.assessments,
         "generation": {
             "enabled": CONFIG.generation.enabled,
+            "assess_answers": CONFIG.generation.assess_answers,
             "consented": bool(s.consent and GENERATION_SIGNAL in
                               (s.consent.get("signals") or [])),
             "bands": {k: {"label": v["label"], "brief": v["brief"]}
                       for k, v in BANDS.items()},
             "difficulty_band": iv.difficulty_band,
+            # Every band this interview has run at, in order. The band is
+            # switchable throughout, so the page shows the path rather than
+            # implying a single fixed setting.
+            "bands_used": [h["band"] for h in iv.band_history],
+            "band_history": iv.band_history,
             "resume": ({"filename": s.resume_meta.get("filename"),
                         "kind": s.resume_meta.get("kind"),
                         "chars": s.resume_meta.get("chars")}
@@ -785,6 +804,8 @@ def questions(sid: str, who: str, t: str):
                   for k, v in BANDS.items()},
         "generation_enabled": CONFIG.generation.enabled,
         "difficulty_band": iv.difficulty_band,
+        "bands_used": [h["band"] for h in iv.band_history],
+        "band_history": iv.band_history,
         "resume": ({"filename": s.resume_meta.get("filename"),
                     "chars": s.resume_meta.get("chars"),
                     "kind": s.resume_meta.get("kind")}
@@ -1076,6 +1097,95 @@ async def suggest_followups(sid: str, request: Request):
             "followups": items, "meta": _public_meta(meta)}
 
 
+@app.post("/api/sessions/{sid}/questions/assess")
+async def assess(sid: str, request: Request):
+    """Read the answer just given, and offer the questions that test it.
+
+    THE ONE THING THIS ENDPOINT MUST NOT BECOME
+    -------------------------------------------
+    A rating. It returns a description of the ANSWER -- which claims came
+    with a mechanism behind them, which were only asserted, what the anchors
+    still need -- and counter-questions aimed at the gaps. It returns no
+    score, because `assess_answer` has no field to put one in, and nothing it
+    returns reaches `Interview.rate()`, which takes a score and evidence from
+    a named human.
+
+    What it is for: an interviewer who does not share the candidate's
+    technical background cannot hear the difference between a fluent answer
+    and a deep one while it is being given. Both are confident and both use
+    the right words. Naming the unbacked claims is help with listening, and
+    it lands as a better next question rather than as a verdict.
+
+    The read is recorded on the interview with who asked for it and whether
+    they had already locked -- see `Interview.add_assessment`.
+    """
+    s = get_session(sid)
+    body = await request.json()
+    who = _slug(body.get("who"))
+    _interviewer(s, who, body.get("t"))
+    _egress_permitted(s)
+    band = body.get("band") or s.interview.difficulty_band or "medium"
+    if band not in BANDS:
+        raise HTTPException(422, f"band must be one of {', '.join(BANDS)}")
+
+    # Which question this answers, if the interviewer said. Both the guide's
+    # fixed questions and the CV-derived set are candidates, because either
+    # may be what is on the table -- and if neither matches, the answer is
+    # still read, just without the question's competencies to aim at.
+    qid = body.get("question_id")
+    question = None
+    if qid:
+        question = next((q for q in s.guide.questions if q.id == qid), None)
+        if question is None:
+            question = next((q for q in s.interview.generated_questions
+                             if q.get("id") == qid), None)
+        if question is None:
+            raise HTTPException(422, f"unknown question {qid!r}")
+
+    # The candidate's own words, from the transcript this server already
+    # holds. Nothing new is captured to do this, and only their speech is
+    # read: the interviewer's own questions are not the answer, and feeding
+    # them in produced reads of the panel talking to itself.
+    answer = body.get("answer")
+    if not answer:
+        builder = HUB.builders.get(sid)
+        lines = [l["text"] for l in (builder.lines if builder else [])
+                 if l.get("speaker") == "candidate"]
+        if not lines:
+            return {"ok": True, "assessment": None, "waiting": True,
+                    "reason": ("the candidate has not said anything yet. "
+                               "There is no answer to read.")}
+        answer = " ".join(lines[-8:])
+
+    try:
+        assessment, meta = await asyncio.to_thread(
+            assess_answer, question, answer, s.guide, band)
+    except GenerationDisabled as e:
+        raise HTTPException(409, str(e))
+    except NoCredential as e:
+        raise HTTPException(501, str(e))
+    except GenerationError as e:
+        raise HTTPException(502, str(e))
+
+    if assessment is None:
+        # Not an error, and the normal state early in an answer. Said as a
+        # status rather than a failure so the page does not colour it red.
+        return {"ok": True, "assessment": None, "waiting": True,
+                "reason": meta.get("skipped")
+                or "not enough of an answer to read yet"}
+
+    record = s.interview.add_assessment(
+        assessment, {**meta, "requested_by": who})
+    s.interview.save()
+    return {"ok": True, "band": band,
+            "assessment": {"id": record["id"],
+                           "read": record["read"],
+                           "after_lock": record["after_lock"],
+                           "counter_questions": record["counter_questions"]},
+            "meta": _public_meta(meta),
+            "coverage": s.interview.coverage()}
+
+
 def _public_meta(meta):
     """What the panel is told about a generation. Includes the refusals.
 
@@ -1090,7 +1200,13 @@ def _public_meta(meta):
              # How much of the candidate's answer informed this, and whether
              # the model judged that answer thin -- both are things the
              # interviewer is entitled to see behind a suggestion.
-             "transcript_chars", "answer_was_thin")} | {
+             "transcript_chars", "answer_was_thin",
+             # For a read of an answer: how deep the model judged it, and how
+             # many of its own lines were withheld for naming a protected
+             # topic. The second is the interesting one -- a filter nobody
+             # can see firing is a filter nobody can check.
+             "depth", "answer_chars")} | {
+        "withheld_from_read": len(meta.get("withheld_from_read") or []),
         "rejected": [{"reason": r.get("reason"),
                       "text": (r.get("item") or {}).get("text")}
                      for r in meta.get("rejected", [])]}
