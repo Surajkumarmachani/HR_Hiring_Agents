@@ -21,12 +21,71 @@ REGION="${REGION:-asia-south1}"              # Mumbai. Nearest to India.
 SERVICE="${SERVICE:-interview-signals}"
 BUCKET="${BUCKET:-${PROJECT}-interview-out}"
 
+die() { echo; echo "ERROR: $*" >&2; exit 2; }
+
+# --- pre-flight ----------------------------------------------------------
+# Every check below is a state this script previously got PAST, leaving the
+# machine half-configured and the error message pointing somewhere else.
+
+command -v gcloud >/dev/null || die \
+"the gcloud CLI is not on your PATH.
+
+  brew install --cask google-cloud-sdk
+
+  Then add it to your PATH -- the installer does not:
+    echo 'export PATH=/opt/homebrew/share/google-cloud-sdk/bin:\$PATH' >> ~/.zshrc
+    source ~/.zshrc"
+
+if ! gcloud auth list --filter=status:ACTIVE --format='value(account)' \
+        2>/dev/null | grep -q .; then
+  die "you are not signed in to gcloud.
+
+  gcloud auth login"
+fi
+
 if [[ -z "$PROJECT" ]]; then
-  echo "Set PROJECT first:  PROJECT=my-gcp-project ./deploy-cloudrun.sh" >&2
-  exit 2
+  die "set PROJECT to your real project id.
+
+  gcloud projects list
+
+  Then:
+    PROJECT=<the-id-from-that-list> ./deploy-cloudrun.sh
+
+  No project yet? Create one and link billing (Cloud Run needs it):
+    gcloud projects create my-interview-proj --name='Interview Signals'
+    open 'https://console.cloud.google.com/billing/linkedaccount?project=my-interview-proj'"
+fi
+
+# The placeholder from the instructions. Setting it as the active project
+# succeeded, so the next command failed with an authentication error that had
+# nothing to do with the real problem.
+if [[ "$PROJECT" == "your-gcp-project-id" || "$PROJECT" == *"<"* ]]; then
+  die "\"$PROJECT\" is the placeholder, not your project id. Run:
+
+  gcloud projects list"
+fi
+
+if ! gcloud projects describe "$PROJECT" >/dev/null 2>&1; then
+  die "project \"$PROJECT\" does not exist, or this account cannot see it.
+
+  gcloud projects list
+  gcloud auth list"
+fi
+
+# Cloud Run refuses to deploy without billing, but only after the build has
+# already run -- which is 10-20 minutes spent to reach a failure knowable now.
+BILLING="$(gcloud beta billing projects describe "$PROJECT" \
+            --format='value(billingEnabled)' 2>/dev/null || echo unknown)"
+if [[ "$BILLING" == "False" ]]; then
+  die "billing is not enabled on \"$PROJECT\". Cloud Run will not deploy
+  without it, and it fails AFTER the build, so this is checked first.
+
+  open 'https://console.cloud.google.com/billing/linkedaccount?project=$PROJECT'"
 fi
 
 echo "==> project $PROJECT / region $REGION / service $SERVICE"
+echo "    account: $(gcloud auth list --filter=status:ACTIVE \
+                       --format='value(account)' | head -1)"
 gcloud config set project "$PROJECT" >/dev/null
 
 echo "==> enabling the APIs this needs"
