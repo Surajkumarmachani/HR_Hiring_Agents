@@ -50,12 +50,6 @@
         this machine. Off by default.</span></span>
     </label>
 
-    <label for="policy">Region policy for signal capture</label>
-    <select id="policy">
-      <option value="strict">strict — withhold capture when region is unknown</option>
-      <option value="permissive">permissive — capture unless region is restricted</option>
-    </select>
-
     <div class="row" style="margin-top:18px">
       <button id="go">Create session</button>
       <span id="err" class="err"></span>
@@ -95,7 +89,6 @@ $("#go").onclick = async () => {
     organisation: $("#org").value.trim(),
     panel: $("#panel").value.split(",").map(s => s.trim()).filter(Boolean),
     guide: $("#guide").value.trim(),
-    region_policy: $("#policy").value,
     identify_candidate: $("#ident").checked,
     // Sent with the browser's offset, so the server stores a real instant
     // rather than a wall-clock time that means something else to a candidate

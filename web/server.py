@@ -31,14 +31,32 @@ whose quality could be degraded by an adaptive stream, because nothing reads
 it but a person. See `ws_presence_candidate` for why it is gated differently
 from the measured path.
 
-REGIONAL GATE
--------------
-Applied to the SIGNAL CAPTURE, not to the interview. In a restricted region
-the session still runs as a structured interview -- questions, ratings, panel
--- with video measurement disabled. That is the right shape: the interview is
-lawful everywhere, the biometric measurement is what carries the restriction.
-Gate at the pipeline rather than by hiding a button, so a candidate who joins
-from a restricted region cannot be measured even by a direct API call.
+WHAT GATES CAPTURE
+------------------
+The candidate's own consent, and nothing else. Every measured path -- video,
+audio, the transcript, identity, and the one egress to the question
+generator -- checks the signal it needs against `s.consent["signals"]` and
+refuses without it, in the server rather than by hiding a button in the UI.
+
+There was also a REGIONAL gate here: a set of EU/EEA country codes read off a
+CDN geolocation header, which switched signal capture off for candidates in
+those countries and refused outright when no header arrived. It has been
+removed, deliberately, and it is worth recording why rather than letting it
+vanish from the history.
+
+It was doing two jobs badly. As a compliance control it was guesswork -- a
+header any proxy can set or drop, standing in for a legal analysis nobody had
+written; and as a deployment control it was actively harmful, because the
+default `strict` policy refused capture whenever the header was absent, which
+is every host that does not sit behind Cloudflare. The result was a system
+that appeared to work and measured nothing.
+
+Consent is the stronger control and always was: it asks the person rather
+than inferring from their IP address, it is itemised, and it is enforced at
+the pipeline. If a deployment needs a jurisdictional restriction on top of
+consent, that belongs in front of this application -- in the CDN or the load
+balancer that actually knows where the request came from -- not in a set of
+country codes in the source.
 """
 
 import asyncio
@@ -73,15 +91,6 @@ STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 SESSION_ROOT = os.path.join(ROOT, "out", "sessions")
 INTERVIEW_ROOT = os.path.join(ROOT, "out", "interviews")
 
-# Regions where behavioural signal capture is switched off. The interview
-# still runs; only the measurement is withheld.
-SIGNAL_RESTRICTED_REGIONS = {
-    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR",
-    "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK",
-    "SI", "ES", "SE",           # EU
-    "IS", "LI", "NO",           # EEA
-}
-
 # Read .env at import, not only in run_web.py. `uvicorn web.server:app` and
 # any test that starts the app directly are normal ways to run this, and both
 # used to come up with no API key -- configuration should not depend on which
@@ -101,42 +110,10 @@ def _slug(s):
     return re.sub(r"[^A-Za-z0-9_-]", "", str(s))[:64]
 
 
-def client_region(request: Request):
-    """Best-effort region for the regional gate.
-
-    Reads the header a CDN or load balancer sets. There is no IP geolocation
-    database here, so a direct-to-uvicorn deployment reports None -- and the
-    policy below treats None as UNKNOWN rather than as permitted. Production
-    must put a real geolocation source in front of this; guessing would be
-    worse than refusing.
-    """
-    for h in ("cf-ipcountry", "x-vercel-ip-country", "x-appengine-country",
-              "x-client-region"):
-        v = request.headers.get(h)
-        if v and v.upper() not in ("XX", "T1"):
-            return v.upper()
-    return None
-
-
-def signals_permitted(region, policy):
-    """(allowed, reason). Unknown region is refused under 'strict'."""
-    if region is None:
-        if policy == "strict":
-            return False, ("region unknown and policy is strict: no "
-                           "geolocation header reached the server, so signal "
-                           "capture is withheld rather than guessed")
-        return True, "region unknown, policy permits capture"
-    if region in SIGNAL_RESTRICTED_REGIONS:
-        return False, (f"{region} is in the restricted set: behavioural "
-                       f"signal capture is disabled. The interview runs as a "
-                       f"structured interview without measurement.")
-    return True, f"{region} permitted"
-
-
 class Session:
     """One interview: a candidate, a panel, a guide, and its recordings."""
 
-    def __init__(self, sid, guide, candidate_ref, panel, region_policy,
+    def __init__(self, sid, guide, candidate_ref, panel,
                  candidate_name=None, organisation=None, scheduled_at=None,
                  duration_minutes=60, early_join_minutes=10,
                  late_grace_minutes=30, identify_candidate=False):
@@ -159,7 +136,6 @@ class Session:
         self.early_join_minutes = int(early_join_minutes)
         self.late_grace_minutes = int(late_grace_minutes)
         self.created_at = _now()
-        self.region_policy = region_policy
         self.candidate_token = secrets.token_urlsafe(16)
         self.interviewer_tokens = {p: secrets.token_urlsafe(16) for p in panel}
         self.dir = os.path.join(SESSION_ROOT, sid)
@@ -184,8 +160,6 @@ class Session:
         self.resume_meta = None
         self.uploads = []
         self.telemetry = []
-        self.signals_enabled = None
-        self.signals_reason = None
 
     # ---------------------------------------------------------- schedule
     def window(self):
@@ -262,8 +236,6 @@ class Session:
             "panel": sorted(self.interviewer_tokens),
             "consent": self.consent,
             "identify_candidate": self.identify_candidate,
-            "signals_enabled": self.signals_enabled,
-            "signals_reason": self.signals_reason,
             "uploads": self.uploads,
             "network": {"jitter_ms": self.network_jitter_ms(),
                         "mean_rtt_ms": self.rtt_ms(),
@@ -360,7 +332,6 @@ async def create_session(request: Request):
 
     sid = datetime.now().strftime("%Y%m%d-%H%M%S")
     s = Session(sid, guide, candidate, panel,
-                body.get("region_policy", "strict"),
                 candidate_name=(body.get("candidate_name") or "").strip()[:80],
                 organisation=(body.get("organisation") or "").strip()[:80],
                 scheduled_at=scheduled,
@@ -381,13 +352,10 @@ async def create_session(request: Request):
 
 
 @app.get("/api/sessions/{sid}/candidate")
-def candidate_state(sid: str, t: str, request: Request):
+def candidate_state(sid: str, t: str):
     s = get_session(sid)
     if not secrets.compare_digest(s.candidate_token, t or ""):
         raise HTTPException(403, "invalid link")
-    region = client_region(request)
-    allowed, reason = signals_permitted(region, s.region_policy)
-    s.signals_enabled, s.signals_reason = allowed, reason
     s.save()
     # The interview notice, not the research one. Serving WP7a here was a
     # live defect: it tells the reader they are not applying for a job.
@@ -405,9 +373,6 @@ def candidate_state(sid: str, t: str, request: Request):
         "organisation": s.organisation,
         "schedule": sched,
         "joinable": ok,
-        "signals_enabled": allowed,
-        "signals_reason": reason,
-        "region": region,
         "consent_given": s.consent is not None,
         # The notice is readable before the window opens. Consent has to be
         # informed, and giving someone time to read it beforehand serves that;
@@ -440,16 +405,6 @@ async def give_consent(sid: str, request: Request):
     if not ok:
         raise HTTPException(403, f"{sched['reason']} "
                                  f"(state: {sched['state']})")
-    # Evaluate the regional gate here rather than trusting a value the
-    # candidate GET happened to leave behind. Depending on that side effect
-    # meant a client which POSTed consent without first loading the page was
-    # refused with "disabled: None", which says nothing to anyone.
-    region = client_region(request)
-    allowed, why = signals_permitted(region, s.region_policy)
-    s.signals_enabled, s.signals_reason = allowed, why
-    if not allowed:
-        raise HTTPException(
-            403, f"signal capture is disabled for this session: {why}")
     # Exactly what was ticked, and nothing that was not offered. A signal
     # arriving here that is not in the interview set is a client bug or a
     # forged request; either way it must not become a permission.
@@ -468,7 +423,6 @@ async def give_consent(sid: str, request: Request):
         # Recorded because "agreed to nothing" is a real, valid answer and
         # has to be distinguishable from "never reached the consent page".
         "declined": sorted(offered - set(ticked)),
-        "region": client_region(request),
     }
     s.save()
     return {"ok": True, "consent": s.consent}
@@ -511,9 +465,6 @@ async def upload(sid: str, t: str = Form(...), role: str = Form(...),
             raise HTTPException(
                 403, "no consent recorded for this session; nothing may be "
                      "uploaded")
-        if not s.signals_enabled:
-            raise HTTPException(403, f"signal capture disabled: "
-                                     f"{s.signals_reason}")
     else:
         check_interviewer(s, _slug(role), t)
 
@@ -1218,9 +1169,10 @@ async def ws_candidate(ws: WebSocket, sid: str, t: str = ""):
     """Candidate sends downscaled JPEG frames; the server measures them.
 
     This stream is the measurement: nothing is recorded on the candidate's
-    device. It is gated on the schedule window, the regional policy and
-    consent, in that order, and every refusal is delivered as JSON before the
-    socket closes so the page can say which one it was.
+    device. It is gated on the schedule window and then on consent -- both
+    the fact of it and the individual signals inside it -- and every refusal
+    is delivered as JSON before the socket closes so the page can say which
+    one it was.
     """
     s = SESSIONS.get(sid)
     if not s or not secrets.compare_digest(s.candidate_token, t or ""):
@@ -1231,13 +1183,6 @@ async def ws_candidate(ws: WebSocket, sid: str, t: str = ""):
         await ws.accept()
         await ws.send_json({"error": "outside the scheduled window",
                             "reason": sched["reason"], "schedule": sched})
-        await ws.close(code=4403)
-        return
-    if not s.signals_enabled:
-        # Same gate as upload: refuse at the pipeline, not in the UI.
-        await ws.accept()
-        await ws.send_json({"error": "signal capture disabled",
-                            "reason": s.signals_reason})
         await ws.close(code=4403)
         return
     if not s.consent:
@@ -1407,10 +1352,10 @@ async def ws_audio(ws: WebSocket, sid: str, t: str = "", role: str = "candidate"
             return
         # The candidate's audio is a measured signal, so it is gated. The
         # interviewer's is not -- they are staff, not a data subject here.
-        if not s.signals_enabled or not s.consent:
+        if not s.consent:
             await ws.accept()
             await ws.send_json({"error": "not permitted",
-                                "reason": s.signals_reason or "no consent"})
+                                "reason": "no consent recorded"})
             await ws.close(code=4403)
             return
         # `audio_transcript` is a separate item from `audio_prosody`, and the
@@ -1488,11 +1433,11 @@ async def ws_presence_candidate(ws: WebSocket, sid: str, t: str = ""):
     """The candidate receives whichever panel member is on camera.
 
     Gated on the link token and the schedule window -- and deliberately NOT on
-    consent or on the regional signal policy. Those two govern MEASURING the
-    candidate; seeing the person interviewing you runs the other way and
-    carries neither restriction. So a candidate whose session has measurement
-    switched off, or who has not yet agreed to it, still gets a face to talk
-    to rather than being the only visible party in the call.
+    consent. Consent governs MEASURING the candidate; seeing the person
+    interviewing you runs the other way and carries no such restriction. So a
+    candidate who has not yet agreed to any measurement, or who declined all
+    of it, still gets a face to talk to rather than being the only visible
+    party in the call.
     """
     s = SESSIONS.get(sid)
     if not s or not secrets.compare_digest(s.candidate_token, t or ""):
@@ -1532,10 +1477,10 @@ async def ws_presence_interviewer(ws: WebSocket, sid: str, who: str,
     page shows a single feed and two streams into it is a flicker, not a video
     call. The second asker is refused with a reason its page can display.
 
-    Not gated on consent or region: those govern the candidate's measurement,
-    and nothing here is measured. It is gated on the schedule window only
-    through the candidate's own socket -- an interviewer publishing into an
-    empty session simply reaches nobody.
+    Not gated on consent: that governs the candidate's measurement, and
+    nothing here is measured. It is gated on the schedule window only through
+    the candidate's own socket -- an interviewer publishing into an empty
+    session simply reaches nobody.
     """
     s = SESSIONS.get(sid)
     if not s or who not in s.interviewer_tokens or \

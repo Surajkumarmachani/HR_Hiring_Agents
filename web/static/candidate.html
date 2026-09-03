@@ -187,15 +187,6 @@ async function load() {
     return;
   }
 
-  if (!state.signals_enabled) {
-    $("#gate").hidden = false;
-    $("#gate").innerHTML = `<div class="banner">
-      <p><strong>Camera measurement is switched off for this session.</strong></p>
-      <p>${state.signals_reason}</p>
-      <p>Your interview goes ahead exactly as normal. Your interviewer will ask
-      the same questions and assess your answers the same way.</p></div>`;
-    return;
-  }
   $("#notice").textContent = state.notice_markdown || "(notice unavailable)";
   if (state.consent_given) { $("#lobby").hidden = false; initMedia(); }
   else { renderSignals(); $("#consent").hidden = false; }
@@ -383,7 +374,7 @@ function connectVideo() {
 // ---- the interviewer's camera ----------------------------------------
 // Receive-only: frames as binary, who is on camera as JSON. A separate socket
 // from the one that carries this candidate's own frames, and not gated on
-// consent or on the regional policy -- seeing the person interviewing you is
+// consent -- seeing the person interviewing you is
 // not a measurement of you, so it still works in a session where measurement
 // is switched off.
 function connectPresence() {
