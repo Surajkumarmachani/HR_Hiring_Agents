@@ -26,7 +26,12 @@ services:
       sizeGB: 10
 
     envVars:
+      # Set in the dashboard, prompted for on first deploy, never committed.
+      # Without it the server starts and says so at launch; questions and the
+      # answer read are unavailable, everything else works.
       - key: GEMINI_API_KEY
-        sync: false            # set in the dashboard; never committed
-      - key: PYTHON_VERSION
-        value: "3.11"
+        sync: false
+      # No PYTHON_VERSION here on purpose: it is read by Render's native
+      # Python buildpack and is ignored by a Docker service. The version is
+      # whatever the Dockerfile's FROM says, and having it in two places
+      # invites them to disagree.
