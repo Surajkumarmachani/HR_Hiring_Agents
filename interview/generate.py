@@ -69,6 +69,7 @@ import json
 import os
 import re
 import time
+from dataclasses import replace
 
 import env_file
 from config import CONFIG
@@ -1375,20 +1376,31 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
     a human -- it has no parameter this could reach even if someone wanted it
     to. See `_assess_schema` and `ASSESS_RULES`.
 
-    LATENCY. Measured at 22.8 s on `gemini-3.1-pro-preview` for a five-
-    sentence answer, with adaptive thinking on. That is slow with a candidate
-    in the room, and it is why this call is never automatic the way the "ask
-    next" suggestion is: the interviewer presses a button and knows they are
-    waiting, rather than having a panel populate itself twenty seconds after
-    a moment that has passed.
+    LATENCY, and what it was bought with. This started at 18-22 s on the pro
+    model with adaptive thinking, which is far too slow to fire on its own
+    while someone waits to be asked the next question. Measured across four
+    answers spanning empty to fully-evidenced:
 
-    The thinking budget is what costs the time and it is also what buys the
-    only thing here worth having -- separating a claim that came with a
-    mechanism from one that did not. With thinking off the lists still fill,
-    which is worse than an empty panel: a supported claim filed under
-    `asserted` sends the interviewer to press on something the candidate
-    already answered, and they cannot tell from the screen that it happened.
-    So the latency is accepted rather than optimised away.
+        pro + thinking      13.9 - 21.3 s     scores 2, 3, 8 / 10
+        flash + thinking            12.0 s
+        flash, no thinking   3.7 -  5.3 s     scores 2, 3, 7 / 10
+
+    The fast configuration agrees exactly on the answers that matter most --
+    the thin ones, where the interviewer needs to be told to press -- and
+    differs by a point at the top of the range. So `config.assess_model` and
+    `config.assess_thinking` make this call flash-without-thinking while
+    `interview_from_resume` keeps the pro model, because that one runs once,
+    before anyone is in the room, and produces the questions the interview
+    rests on.
+
+    The earlier claim here that thinking was what separated a supported claim
+    from an asserted one did not survive being measured: without it the
+    separation held on every answer tested.
+
+    End to end from the candidate falling silent, the score reaches the panel
+    in roughly chunk_seconds + 1 (the last audio chunk transcribing) + the
+    silence confirmation + this call. It is not instant and cannot be: no
+    word can be scored before it has been transcribed.
     """
     cfg = cfg or CONFIG.generation
     if band not in BANDS:
@@ -1421,11 +1433,18 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
     comps = [c for c in (comps or ())
              if c in {x.id for x in guide.competencies}]
 
+    # A faster model than the CV calls use, and no thinking budget. Both are
+    # latency decisions and both are measured -- see config.assess_model. The
+    # override is applied here rather than globally because it is right ONLY
+    # for this call: the same trade on interview_from_resume would buy a few
+    # seconds nobody is waiting for and cost quality in the questions the
+    # whole interview is built from.
+    fast = replace(cfg, gemini_model=cfg.assess_model)
     t0 = time.time()
     data, prov = generate_json(
         _guide_context(guide) + "\n\n" + ASSESS_RULES,
         _assess_user_prompt(qtext, comps, answer, band, max_n),
-        _assess_schema(max_n), cfg)
+        _assess_schema(max_n), fast, thinking=cfg.assess_thinking)
 
     raw_read = data.get("read") or {}
     # Clamped rather than trusted. The schema says 1-10 and the API enforces
@@ -1478,7 +1497,7 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
     meta = {
         "source": "assess",
         "band": band,
-        "model": cfg.gemini_model,          # requested
+        "model": cfg.assess_model,          # requested
         "module_version": MODULE_VERSION,
         "question_id": getattr(question, "id", None),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

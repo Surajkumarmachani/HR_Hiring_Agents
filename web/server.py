@@ -155,6 +155,11 @@ class Session:
         # How much candidate speech the last suggestion was built from, so a
         # second suggestion is never a reword of the first.
         self._suggest_watermark = 0
+        # The same guard for the answer score. It matters more here because
+        # the score fires on its own: without it, every pause in a long
+        # answer would spend a request re-scoring words already scored, and
+        # the panel would watch the number wobble on unchanged speech.
+        self._assess_watermark = {}
         self.resume_path = None
         self.resume_text = None
         self.resume_meta = None
@@ -553,6 +558,12 @@ def interview_state(sid: str, who: str, t: str):
         # causes that used to look identical: nobody has joined, they joined
         # and declined the transcript, or they have not spoken yet. The
         # middle one never resolves by waiting, so the panel has to say so.
+        # The audio chunk length. The panel needs it to know how long a gap
+        # in the transcript has to be before it means the candidate stopped
+        # talking rather than a chunk being in flight -- see the auto-scoring
+        # timer in interviewer.html. Sent rather than duplicated as a
+        # constant there, so the two cannot drift apart.
+        "chunk_seconds": CONFIG.text.chunk_seconds,
         "candidate_joined": (sid, "candidate") in HUB.transcribers,
         "candidate_transcript_ok": (
             None if not s.consent
@@ -1087,17 +1098,22 @@ async def assess(sid: str, request: Request):
     if band not in BANDS:
         raise HTTPException(422, f"band must be one of {', '.join(BANDS)}")
 
-    # Which question this answers, if the interviewer said. Both the guide's
-    # fixed questions and the CV-derived set are candidates, because either
-    # may be what is on the table -- and if neither matches, the answer is
-    # still read, just without the question's competencies to aim at.
+    # Which question this answers. FOUR places it can live, and leaving any
+    # of them out breaks a flow the interviewer actually uses: the guide's
+    # fixed questions, the CV-derived set, a counter-question the model
+    # offered, and a question the interviewer wrote themselves. The last two
+    # both live in `suggestions` and were both missing -- so scoring the
+    # answer to your own question, or to a counter-question you had just
+    # asked, failed with "unknown question".
     qid = body.get("question_id")
     question = None
     if qid:
-        question = next((q for q in s.guide.questions if q.id == qid), None)
-        if question is None:
-            question = next((q for q in s.interview.generated_questions
-                             if q.get("id") == qid), None)
+        question = (
+            next((q for q in s.guide.questions if q.id == qid), None)
+            or next((q for q in s.interview.generated_questions
+                     if q.get("id") == qid), None)
+            or next((q for q in s.interview.suggestions
+                     if q.get("id") == qid), None))
         if question is None:
             raise HTTPException(422, f"unknown question {qid!r}")
 
@@ -1116,6 +1132,16 @@ async def assess(sid: str, request: Request):
                                "There is no answer to read.")}
         answer = " ".join(lines[-8:])
 
+    # Auto-fired scoring re-asks on every detected pause, so unchanged
+    # speech must not spend a request. Keyed per question: moving to the next
+    # question is a new answer even if the transcript slice overlaps.
+    key = qid or "_"
+    seen = s._assess_watermark.get(key, 0)
+    if body.get("auto") and len(answer.strip()) <= seen:
+        return {"ok": True, "assessment": None, "waiting": True,
+                "unchanged": True,
+                "reason": "nothing new has been said since the last score"}
+
     try:
         assessment, meta = await asyncio.to_thread(
             assess_answer, question, answer, s.guide, band)
@@ -1133,6 +1159,7 @@ async def assess(sid: str, request: Request):
                 "reason": meta.get("skipped")
                 or "not enough of an answer to read yet"}
 
+    s._assess_watermark[key] = len(answer.strip())
     record = s.interview.add_assessment(
         assessment, {**meta, "requested_by": who})
     s.interview.save()

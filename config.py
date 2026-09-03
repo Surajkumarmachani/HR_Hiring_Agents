@@ -508,6 +508,36 @@ class GenerationConfig:
 
     max_followups: int = 3
 
+    assess_model: str = "gemini-flash-latest"
+    """Model for reading an answer back. A different one from `gemini_model`,
+    and the difference is latency.
+
+    Scoring an answer happens with a candidate mid-interview waiting for the
+    next question, so the number that matters is seconds-to-screen, not
+    marginal quality. Measured on the same four answers, same prompt:
+
+        pro + thinking      13.9 - 21.3 s     2, 3, 8 / 10
+        flash, no thinking   3.7 -  5.3 s     2, 3, 7 / 10
+
+    The two agree on the thin answers exactly and differ by one point on the
+    strong one, for a quarter of the wall clock. That trade is obviously
+    right here and obviously wrong for `interview_from_resume`, which runs
+    once, before anyone is in the room, and produces the questions the whole
+    interview rests on -- so that call keeps the pro model.
+
+    Note that `gemini-pro-latest` REFUSES thinking_budget=0 (400
+    INVALID_ARGUMENT), so "pro but fast" is not an available option. The
+    choice is the model."""
+
+    assess_thinking: bool = False
+    """Whether the scoring call thinks before answering.
+
+    Off. Measured at 12.0 s with thinking against 5.1 s without, on flash,
+    for the same score and the same separation of backed claims from
+    asserted ones. The thinking budget is buying something on this task that
+    is not visible in the output and is not worth seven seconds of a
+    candidate's silence."""
+
     max_counter_questions: int = 3
     """Per assessed answer. Counter-questions are the ones that TEST a claim
     the candidate just made rather than asking for more of it, so three is

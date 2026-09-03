@@ -837,11 +837,21 @@ async function markAsked(qid) {
 // mid-interview is worse than none: nothing fires while a call is in flight,
 // nothing fires unless the candidate has said meaningfully more since the
 // last one, and the interviewer can switch it off.
-// Tuned against the audio chunk length: a line cannot arrive until its chunk
-// completes, so the wait after the last line only needs to cover the gap
-// between chunks, not another whole one. At 6 s chunks this was 4000 and the
-// suggestion landed ~10 s after the candidate stopped talking.
-const AUTO_PAUSE_MS = 2000;
+// TIMING, and why this number cannot be small.
+//
+// The candidate's audio is cut into chunks and each chunk is transcribed only
+// once it is complete, so during CONTINUOUS speech transcript lines arrive
+// roughly every chunk length -- with silence in between that is transport,
+// not the speaker pausing. A 2000 ms timer, which is what this was, expires
+// inside that ordinary gap: it fired mid-answer and called the candidate
+// finished while they were drawing breath.
+//
+// So the wait has to outlast one whole chunk cycle. If a chunk was due and
+// did not arrive, nobody is talking -- that is the only reliable silence
+// signal available on this side. Set from the server's own chunk_seconds
+// rather than hard-coded, so the two cannot drift apart.
+const CHUNK_MS = 3000;                 // replaced from the server on load
+let autoPauseMs = CHUNK_MS + 1800;
 const AUTO_MIN_NEW_CHARS = 120;
 let autoTimer = null, inFlight = false, charsAtLastSuggest = 0, candChars = 0;
 
@@ -852,26 +862,45 @@ function setAutoBadge(state) {
     : state === "off" ? "manual" : "auto";
 }
 
+// The server owns the chunk length; the pause that means "they stopped" has
+// to outlast one. Read on load rather than duplicated as a constant here.
+fetch(`/api/sessions/${SID}/interview?who=${WHO}&t=${encodeURIComponent(T)}`)
+  .then(r => r.ok ? r.json() : null)
+  .then(d => {
+    const cs = d && d.chunk_seconds;
+    if (cs) autoPauseMs = cs * 1000 + 1800;
+  }).catch(() => {});
+
 $("#autoSuggest").onchange = e => {
   setAutoBadge(e.target.checked ? "live" : "off");
   if (!e.target.checked) clearTimeout(autoTimer);
   $("#suggestMsg").textContent = e.target.checked
-    ? "Will suggest on its own when they finish answering."
-    : "Automatic suggestions are off \u2014 use Suggest now.";
+    ? "Fires on its own when they finish answering \u2014 scores the answer "
+      + "if a question is on the table, suggests one if not."
+    : "Automatic is off \u2014 use Suggest now, or Score the answer.";
 };
 
 // Called from renderTranscript for every candidate line.
+//
+// What fires depends on whether a question is on the table. If one is, the
+// candidate has just answered it and the useful thing is the SCORE and the
+// counter-question aimed at what they left out. If none is -- the opening of
+// an interview, or between questions -- the useful thing is a suggestion for
+// what to ask. One trigger, two destinations, so the interviewer is never
+// waiting on a click at the moment their attention is free.
 function candidateSpoke(textLen) {
   candChars += textLen;
-  if (!$("#autoSuggest").checked) return;
+  const auto = $("#autoSuggest").checked;
+  if (!auto) return;
   clearTimeout(autoTimer);
   autoTimer = setTimeout(() => {
-    if (inFlight) return;
+    if (inFlight || assessInFlight) return;
     // Not enough new speech to be a new answer -- most likely a short
-    // interjection, and re-suggesting on it would repeat the last question.
+    // interjection, and firing on it would spend a request on nothing.
     if (candChars - charsAtLastSuggest < AUTO_MIN_NEW_CHARS) return;
-    suggest(true);
-  }, AUTO_PAUSE_MS);
+    charsAtLastSuggest = candChars;
+    if (activeQuestion()) judge(true); else suggest(true);
+  }, autoPauseMs);
 }
 
 $("#suggestBtn").onclick = () => suggest(false);
@@ -1052,36 +1081,54 @@ function renderAssessment() {
 
 let assessInFlight = false;
 
-$("#assessBtn").onclick = () => judge();
+$("#assessBtn").onclick = () => judge(false);
 
-async function judge() {
+async function judge(auto) {
   if (assessInFlight) return;
   const q = activeQuestion();
   if (!q) return;
   assessInFlight = true;
   const btn = $("#assessBtn");
   btn.disabled = true;
-  $("#assessMsg").textContent = "reading what they said\u2026 ~20 seconds";
+  $("#scoreBadge").hidden = false;
+  $("#scoreBadge").className = "badge warn";
+  $("#scoreBadge").textContent = "scoring";
+  $("#assessMsg").textContent = auto
+    ? "they stopped \u2014 scoring the answer\u2026"
+    : "reading what they said\u2026";
+  const t0 = performance.now();
   try {
     const r = await fetch(`/api/sessions/${SID}/questions/assess`, {
       method: "POST", headers: {"content-type": "application/json"},
-      body: JSON.stringify({who: WHO, t: T, question_id: q.id})});
+      body: JSON.stringify({who: WHO, t: T, question_id: q.id, auto: !!auto})});
     const d = await r.json();
     if (!r.ok) {
       $("#assessMsg").textContent = r.status === 501
         ? "generation is not configured on this server"
         : (d.detail || "could not read that answer");
+      renderAssessment();
       return;
     }
     if (!d.assessment) {
-      $("#assessMsg").textContent = d.reason || "not enough of an answer yet";
+      // Waiting for more of an answer is the normal state, not a failure --
+      // and on an automatic fire it is not worth saying at all, because the
+      // interviewer did not ask and does not need to be told the machine
+      // decided against speaking.
+      if (!auto) $("#assessMsg").textContent =
+        d.reason || "not enough of an answer yet";
+      renderAssessment();
       return;
     }
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
     const w = (d.meta || {}).withheld_from_read;
-    $("#assessMsg").innerHTML = "Scored on evidence, not delivery."
+    $("#assessMsg").innerHTML = `Scored on evidence, not delivery. `
+      + `<span class="hint">${secs}s</span>`
       + (w ? ` <span class="err">${w} line${w > 1 ? "s" : ""} withheld for`
            + ` naming a protected topic.</span>` : "");
     await reload();
+  } catch (e) {
+    $("#assessMsg").textContent = "could not reach the server";
+    renderAssessment();
   } finally {
     assessInFlight = false;
     btn.disabled = false;
