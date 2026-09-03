@@ -74,13 +74,26 @@ fi
 
 # Cloud Run refuses to deploy without billing, but only after the build has
 # already run -- which is 10-20 minutes spent to reach a failure knowable now.
-BILLING="$(gcloud beta billing projects describe "$PROJECT" \
+# `gcloud billing`, not `gcloud beta billing`. The beta component is not
+# installed by default, so the beta form returned an install prompt on stdout
+# and this check compared that text to "False", found it unequal, and passed
+# -- silently skipping the one check whose whole purpose is to run before a
+# 20-minute build.
+BILLING="$(gcloud billing projects describe "$PROJECT" \
             --format='value(billingEnabled)' 2>/dev/null || echo unknown)"
-if [[ "$BILLING" == "False" ]]; then
-  die "billing is not enabled on \"$PROJECT\". Cloud Run will not deploy
-  without it, and it fails AFTER the build, so this is checked first.
+if [[ "$BILLING" != "True" ]]; then
+  die "billing is not enabled on \"$PROJECT\" (reported: $BILLING).
 
-  open 'https://console.cloud.google.com/billing/linkedaccount?project=$PROJECT'"
+  Cloud Run will not deploy without it, and it fails AFTER the image is
+  built -- so this is checked here rather than 20 minutes from now.
+
+  Check whether you have an OPEN billing account at all:
+    gcloud billing accounts list
+
+  An account listed with OPEN=False is closed -- often an expired free
+  trial -- and cannot be linked to anything until it is reopened with a
+  payment method. Link one to this project:
+    open 'https://console.cloud.google.com/billing/linkedaccount?project=$PROJECT'"
 fi
 
 echo "==> project $PROJECT / region $REGION / service $SERVICE"
