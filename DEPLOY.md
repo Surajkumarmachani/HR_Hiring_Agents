@@ -20,10 +20,75 @@ It needs a **container that keeps running**.
 
 ## What to deploy on instead
 
-**Render** is the closest thing to Vercel's experience — connect the repo,
-push to deploy, automatic HTTPS — and it supports WebSockets, persistent
-disks and long-running processes. This guide uses it. Fly.io and Railway work
-identically in shape; see the end.
+Two documented paths in this repo:
+
+- **Google Cloud Run** — `./deploy-cloudrun.sh`. The Google answer, and the
+  one to use if you are already in Firebase/GCP or want the Mumbai region.
+  Jump to *Cloud Run* below.
+- **Render** — `render.yaml`. Closest to Vercel's experience: connect the
+  repo, push to deploy, automatic HTTPS. Cheaper and simpler; no India
+  region. The main body of this guide.
+
+Fly.io and Railway are the same shape as Render; see the end.
+
+---
+
+## Cloud Run (and where Firebase fits)
+
+**Firebase Hosting cannot run this** — it serves static files. **Cloud
+Functions cannot either** — they are stateless and cannot hold a WebSocket,
+the same blockers as Vercel. **Cloud Run can**: it runs the container as a
+long-lived process and supports WebSockets. It is the one Google product that
+fits, and it is in the same console as Firebase.
+
+**Do not put Firebase Hosting in front of it.** Hosting can rewrite to Cloud
+Run, but its CDN does not proxy WebSockets, and this app builds every socket
+URL from `location.host`. Pages would load while all five sockets failed.
+Serve directly from the `*.run.app` URL — that needs no code change at all.
+
+### Steps
+
+```bash
+# 1. Install the SDK (once)
+brew install --cask google-cloud-sdk
+gcloud init          # sign in, pick or create a project
+
+# 2. Deploy
+PROJECT=your-gcp-project-id ./deploy-cloudrun.sh
+```
+
+The script enables the APIs, puts your Gemini key in Secret Manager (read
+from `.env` if it is there), creates a bucket for `out/`, builds the image on
+Cloud Build and deploys with the flags that matter. First build is 10–20
+minutes; it prints the URL when it is done.
+
+### The four flags you must not change
+
+| Flag | Why |
+|---|---|
+| `--max-instances=1` | The session is in this process's memory. A second instance cannot see the interview the first is holding. Correctness, not performance. |
+| `--timeout=3600` | **The one that will catch you.** A WebSocket is one long request and the default timeout is 300 s. Leave it and every interview dies silently at five minutes. |
+| `--no-cpu-throttling` | The measurement worker and transcriber are asyncio tasks doing work between requests. Throttled, they stall mid-call. |
+| `--cpu=2 --memory=4Gi` | Two MediaPipe graphs, Whisper and an ONNX embedder in one process. 2 GB OOMs when a candidate joins. |
+
+### What it costs, and the catch
+
+`--min-instances=1` plus `--no-cpu-throttling` means you are paying for 2 vCPU
+and 4 GiB continuously — order of **$40–70/month**, more than Render's ~$25.
+Check the pricing calculator for your region rather than trusting that range.
+Dropping to `--cpu=1 --memory=2Gi` roughly halves it and risks the OOM.
+
+The catch is storage. Cloud Run has no disk, so `out/` is a Cloud Storage
+bucket mounted through FUSE. Whole-file writes — which is what the session,
+interview and consent records are — work fine. Two operations to keep an eye
+on: the append to `out/audit/consent-events.jsonl` rewrites the object each
+time, and `os.replace()` in the CV upload becomes a copy-and-delete. Both are
+correct at interview volume and neither is fast. If the audit log ever gets
+hot, that is the thing to move to Firestore first.
+
+---
+
+## Render
 
 ---
 
@@ -182,5 +247,7 @@ Same container, same constraints:
   do the TLS and updates yourself.
 
 **Do not use:** Vercel, Netlify, Cloudflare Workers, AWS Lambda, Google Cloud
-Functions. All are stateless request/response platforms and all fail on the
-five blockers in the first table.
+Functions, Firebase Hosting on its own. All are stateless request/response or
+static-file platforms and all fail on the five blockers in the first table.
+Google Cloud Run is the exception among the serverless-branded options,
+because it runs a container rather than a function — see above.
