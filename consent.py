@@ -305,12 +305,61 @@ def load(path_or_subject, root="out", required_signals=()):
     return rec
 
 
+# Stores that hold subject-linked data OUTSIDE the subject directory.
+#
+# The subject directory is this module's unit of deletion, and everything that
+# knows about a person is supposed to live inside it. `out/rppg-truth/` does
+# not, and cannot: a reference-pulse label is keyed to a RECORDING, is used to
+# score the estimator across subjects, and may exist for a clip with no
+# subject attached at all.
+#
+# It is still physiological data about a named person. So it is swept here by
+# the field that names them, because the alternative is the exact defect this
+# module was written to close -- "nothing recorded WHICH session files belong
+# to a subject, so 'delete this person's data' had no defined answer". A
+# calibration artefact is not exempt from a withdrawal because it is a
+# calibration artefact.
+#
+# (dirname, json field naming the subject). Add to this list, do not invent a
+# second deletion path.
+SATELLITE_STORES = (
+    ("rppg-truth", "subject_ref"),
+)
+
+
+def satellite_files(root, subject_id):
+    """Files outside the subject directory that name this subject."""
+    hits = []
+    for dirname, field in SATELLITE_STORES:
+        d = os.path.join(root, dirname)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".json"):
+                continue
+            full = os.path.join(d, name)
+            try:
+                with open(full) as fh:
+                    if json.load(fh).get(field) == subject_id:
+                        hits.append(full)
+            except (ValueError, OSError):
+                # An unreadable file cannot be shown NOT to concern this
+                # subject. Reported rather than skipped, because silently
+                # leaving something behind is the failure mode that matters.
+                hits.append(full)
+    return hits
+
+
 # ------------------------------------------------------------ withdrawal
 def withdraw(subject_id, root="out", *, reason=None, keep_receipt=True):
     """Honour a withdrawal: stop processing and ERASE the subject's data.
 
     This is the function the notice promises. It deletes the subject's
-    directory -- every feature file, sidecar and reference recording under it.
+    directory -- every feature file, sidecar and reference recording under it
+    -- and every satellite file elsewhere that names them. See
+    SATELLITE_STORES: reference-pulse labels live outside the subject
+    directory by necessity, and a withdrawal that missed them would leave
+    physiological data about someone who had asked for it to be erased.
 
     A receipt is retained by default: subject id, timestamps and what was
     deleted, with no measurements. That is the minimum needed to prove the
@@ -334,6 +383,14 @@ def withdraw(subject_id, root="out", *, reason=None, keep_receipt=True):
             removed.append({"path": os.path.relpath(full, root),
                             "bytes": os.path.getsize(full)})
 
+    # Anything outside the subject directory that names them. See
+    # SATELLITE_STORES: a reference pulse is physiological data whether or not
+    # it happens to live where the deletion code was first pointed.
+    satellites = satellite_files(root, subject_id)
+    for full in satellites:
+        removed.append({"path": os.path.relpath(full, root),
+                        "bytes": os.path.getsize(full)})
+
     receipt = {
         "schema": "interview-signals/withdrawal-receipt/1",
         "subject_id": subject_id,
@@ -342,12 +399,15 @@ def withdraw(subject_id, root="out", *, reason=None, keep_receipt=True):
         "consent_granted_at": (rec or {}).get("granted_at"),
         "notice_version": (rec or {}).get("notice_version"),
         "files_erased": len(removed),
+        "satellite_files_erased": len(satellites),
         "bytes_erased": sum(f["bytes"] for f in removed),
         "erased": sorted(f["path"] for f in removed),
         "processed_by": getpass.getuser(),
     }
 
     shutil.rmtree(d)
+    for full in satellites:
+        os.remove(full)
 
     if keep_receipt:
         rdir = os.path.join(root, "withdrawals")

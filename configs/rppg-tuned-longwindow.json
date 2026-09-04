@@ -1,0 +1,8 @@
+{
+  "rppg": {
+    "filt_low_hz": 0.65,
+    "welch_seg_sec": 6.0,
+    "window_sec": 15.0,
+    "patch_warmup_sec": 17.0
+  }
+}

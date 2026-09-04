@@ -66,8 +66,24 @@ PATCHES = {
     # Temples, outside the lens on most frames but often under hair.
     "temple_l":    [21, 54, 103, 67, 109],
     "temple_r":    [251, 284, 332, 297, 338],
-    # Nose bridge: bare on everyone, but a spectacle bridge sits right on it.
-    "nose_bridge": [6, 197, 195, 5, 4],
+    # Nasal dorsum: bare on everyone, but a spectacle bridge sits right on it.
+    #
+    # WAS [6, 197, 195, 5, 4], WHICH COULD NEVER WORK. Every one of those five
+    # landmarks lies on the face's MIDLINE -- 6, 197, 195, 5 and 4 run straight
+    # down the centre of the nose -- so the polygon was a vertical line with a
+    # bounding box zero pixels wide. fillConvexPoly filled 49 pixels of line
+    # against min_roi_pixels of 200, skin_mask_rgb_mean returned None, and this
+    # patch reported 0.0% coverage on every frame of all seven recordings on
+    # disk. It was not a marginal region; it was geometrically incapable of
+    # producing a sample, and the failure was invisible because a rejected
+    # patch is a normal event.
+    #
+    # Replaced with a quadrilateral that has area: 193 and 417 are the left and
+    # right sides of the sellion, 196 and 419 the sides lower down the dorsum,
+    # ordered so the quad is convex. 679 px on a 640x480 frame. Kept above the
+    # nostrils deliberately -- extending down to the nose wings would gather
+    # 1046 px and most of the extra would be nostril shadow.
+    "nose_bridge": [193, 417, 419, 196],
 }
 
 
@@ -203,10 +219,37 @@ class AdaptiveROI:
         `t` is the sample time in seconds. Without it the estimators assume
         the nominal rate, and any shortfall scales every reported rate.
         """
+        self.update_means(
+            {name: skin_mask_rgb_mean(frame_bgr, poly, cfg=self.cfg)
+             for name, poly in self.polygons(landmarks_px).items()}, t)
+
+    def update_means(self, means, t=None):
+        """Feed one frame's ALREADY-EXTRACTED patch means. {name: rgb | None}.
+
+        WHY THIS IS A PUBLIC ENTRY POINT
+
+        Tuning is a search over parameters, so the pipeline has to run tens of
+        thousands of times. Almost all of the cost of a run is upstream of the
+        parameters being tuned: MediaPipe landmarking every frame, then a
+        polygon fill and a masked average per patch. The DSP that the
+        thresholds actually govern is microseconds by comparison.
+
+        So rppg_eval.py extracts the patch means from a clip ONCE, caches
+        them, and replays them through this method for every candidate
+        parameter set. A sweep that would take days on video takes seconds,
+        and -- the part that matters more -- it is the same selection,
+        agreement and tracking code that runs in the interview, not a
+        reimplementation of it that could drift.
+
+        Patches absent from `means` are not counted against their own
+        coverage, matching `update`: a landmark set that did not yield a
+        polygon is a missing observation, not a failed one.
+        """
         self.frames += 1
-        for name, poly in self.polygons(landmarks_px).items():
-            self.patches[name].update(
-                skin_mask_rgb_mean(frame_bgr, poly, cfg=self.cfg), t)
+        for name, rgb in means.items():
+            p = self.patches.get(name)
+            if p is not None:
+                p.update(rgb, t)
 
     # ------------------------------------------------------------ select
     def _select(self):

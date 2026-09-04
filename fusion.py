@@ -55,6 +55,11 @@ class SessionState:
     def __init__(self, window_s: float = None, fps: float = 2.0, cfg=None,
                  sink: str = None, flush_every: int = 600):
         self.cfg = (cfg or CONFIG).fusion
+        # The agreement tolerance lives in the rPPG config, and the pulse index
+        # needs it to say whether the regions that produced a number actually
+        # agreed. Held here rather than reached for at use time so a session
+        # cannot be summarised against a different threshold than it ran with.
+        self._roi_tolerance = (cfg or CONFIG).rppg.patch_agreement_tolerance_bpm
         window_s = self.cfg.window_s if window_s is None else window_s
         self.window_s = window_s
         # maxlen must be sized by the rate add() is actually called at. add()
@@ -200,14 +205,36 @@ class SessionState:
                               "social_mean": float(s.mean()) if s.size else 0.0}
 
         # -- Pulse: only surfaced when the signal quality supports it.
+        #
+        # WHY REGION DISAGREEMENT IS REPORTED HERE, NOT JUST RECORDED
+        #
+        # `coverage` below is the fraction of frames that passed the SQI gate.
+        # It is easy to read as "the measurement worked", and it does not mean
+        # that. SQI says the signal was PERIODIC. Whether the regions of the
+        # face agreed about the period is a different question, answered by
+        # roi_spread_bpm -- which every frame has carried since WP5 and which
+        # this index did not surface.
+        #
+        # The consequence was measured on a real session: three fixed regions
+        # disagreeing by a mean of 35 BPM, exceeding this pipeline's own
+        # 12 BPM agreement tolerance in 94% of frames, summarised for a human
+        # as "77 BPM (sqi 0.49, coverage 100%)". The disagreement was in the
+        # parquet the whole time. Nothing printed it, so nobody could see that
+        # the confident number was an average over regions that did not agree.
+        #
+        # This still does not GATE -- withholding on spread is a behavioural
+        # change with its own trade-offs and belongs in one decision, not in a
+        # reporting fix. It makes the disagreement impossible to miss.
         bpm = self._series("physio", "bpm")
         sqi = self._series("physio", "sqi")
+        spread = self._series("physio", "roi_spread_bpm")
+        regions = self._series("physio", "n_regions")
         if bpm.size and sqi.size:
             good = sqi >= self.cfg.min_sqi
             if good.sum() >= max(self.cfg.min_good_sqi_frames,
                                  self.cfg.min_good_sqi_fraction * sqi.size):
                 vals = bpm[good]
-                out["pulse"] = {
+                entry = {
                     "bpm_median": float(np.median(vals)),
                     "bpm_iqr": float(np.percentile(vals, 75) - np.percentile(vals, 25)),
                     "quality": float(sqi[good].mean()),
@@ -217,6 +244,32 @@ class SessionState:
                             "pulse in an interview means arousal, which is "
                             "what interviews cause. It is not a lie detector.",
                 }
+                if spread.size:
+                    sp = spread[good[:spread.size]] if spread.size >= good.size \
+                        else spread
+                    sp = sp[np.isfinite(sp)]
+                    if sp.size:
+                        over = float((sp > self._roi_tolerance).mean())
+                        entry["roi_spread_bpm_median"] = float(np.median(sp))
+                        entry["roi_spread_bpm_max"] = float(sp.max())
+                        entry["frames_over_agreement_tolerance"] = over
+                        entry["agreement_tolerance_bpm"] = self._roi_tolerance
+                        entry["cross_checked"] = bool(over < 0.5)
+                        if over >= 0.5:
+                            entry["warning"] = (
+                                f"the face regions disagreed by more than "
+                                f"{self._roi_tolerance:.0f} BPM in "
+                                f"{over:.0%} of frames (median spread "
+                                f"{np.median(sp):.0f} BPM). bpm_median is an "
+                                f"average over regions that did not agree "
+                                f"about the rate, and coverage above reports "
+                                f"the SQI gate only. Treat this as no "
+                                f"measurement rather than as a rate.")
+                if regions.size:
+                    r = regions[np.isfinite(regions)]
+                    if r.size:
+                        entry["n_regions_median"] = float(np.median(r))
+                out["pulse"] = entry
             else:
                 out["pulse"] = {"status": "discarded: signal quality below floor",
                                 "coverage": float(good.mean())}

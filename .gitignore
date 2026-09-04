@@ -71,3 +71,14 @@ vendor/
 #   out/interview-parameters.xlsx
 # ---------------------------------------------------------------------------
 models/face_recognition_sface.onnx
+
+# Cached per-patch RGB traces from recordings. Large, binary, and entirely
+# regenerable with `python3 rppg_traces.py <clip>` -- but derived from a
+# person's face, so it is not committed either.
+out/rppg-traces/
+# Reference-pulse labels. Physiological data about a named person, swept by
+# consent withdrawal (consent.SATELLITE_STORES). Never committed.
+out/rppg-truth/
+out/rppg-tuning*.log
+out/rppg-tuning-report.json
+out/rppg-real-stats.json

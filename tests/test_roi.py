@@ -229,6 +229,31 @@ check("no landmark index outside the 478-point mesh",
 check("more candidates than the three fixed regions it replaces",
       len(PATCHES) > 3, f"{len(PATCHES)} patches")
 
+# Every polygon must enclose AREA, and this check exists because one did not.
+#
+# nose_bridge was [6, 197, 195, 5, 4] -- five landmarks all on the face's
+# midline, so the polygon was a vertical line with a bounding box zero pixels
+# wide. It filled 49 pixels against min_roi_pixels of 200, returned None on
+# every frame, and reported 0.0% coverage on all seven recordings on disk. The
+# two checks above passed it: the indices were in range and there were nine
+# entries. Neither of those is the property that mattered.
+#
+# Structural, so it needs no video, no model weights and no camera: a set of
+# landmarks drawn entirely from the mesh's midline cannot enclose area, whoever
+# is in front of the lens.
+MIDLINE = {0, 1, 2, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 94,
+           151, 152, 164, 168, 175, 195, 197, 199, 200}
+
+check("every patch has at least three distinct landmarks",
+      all(len(set(idx)) >= 3 for idx in PATCHES.values()),
+      str([n for n, idx in PATCHES.items() if len(set(idx)) < 3]))
+
+midline_only = [n for n, idx in PATCHES.items() if set(idx) <= MIDLINE]
+check("no patch is built entirely from midline landmarks",
+      not midline_only,
+      f"{midline_only} encloses no area -- a zero-width polygon"
+      if midline_only else "a midline-only set would be a line, not a region")
+
 print()
 if failures:
     print(f"FAIL — {len(failures)} check(s): {', '.join(failures)}")

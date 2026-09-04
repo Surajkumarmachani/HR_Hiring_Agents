@@ -58,7 +58,26 @@ class RPPGConfig:
     filt_high_hz: float = 3.6
     """Bandpass FILTER, deliberately wider than the search band. If they were
     equal, a true pulse near the edge (48 BPM = 0.80 Hz) would be attenuated
-    asymmetrically by the roll-off and pulled inwards by several BPM."""
+    asymmetrically by the roll-off and pulled inwards by several BPM.
+
+    MEASURED, AND THE LOWER CORNER IS PROBABLY IN THE WRONG PLACE.
+    `filt_low_hz` is the single most consequential number in this dataclass.
+    Raising it to 0.65 takes MAE on the synthetic corpus from 15.3 to 2.1 BPM
+    and the rate of asserting a pulse on a trace containing none from 58% to
+    17%. The reason is a fact about real traces rather than about the pulse:
+    measured across 48 patches of six recordings, about 93% of a patch mean's
+    fluctuation power sits BELOW the cardiac band, so the lower corner sits in
+    a torrent of noise and 0.1 Hz of extra margin removes a great deal of it.
+
+    The cost is exactly the one the paragraph above predicts. At 44 BPM
+    (0.73 Hz) coverage falls from 83% to 31% -- it refuses more at slow rates
+    rather than answering wrongly, which is the right direction to fail, but
+    it is a real loss and a resting-bradycardic subject is not a hypothetical.
+
+    Not changed here, because a default change alters the digest and with it
+    comparability against every session already recorded, and because the
+    evidence is a corpus calibrated to real noise rather than a real pulse.
+    See configs/rppg-tuned.json, and rppg_truth.py for what would settle it."""
 
     pos_step_sec: float = 1.6
     """POS internal step length, per the paper."""
@@ -66,6 +85,92 @@ class RPPGConfig:
     sqi_peak_halfwidth_hz: float = 0.2
     """Half-width of the band counted as 'at the peak' when computing SQI,
     applied to the fundamental and its first harmonic."""
+
+    # --- spectrum estimation ---------------------------------------------
+    # These four were literals inside rppg.py's estimate(). They are the
+    # levers that decide how precisely a peak can be located, which is a
+    # different question from whether the peak is the right one, and they were
+    # never tunable. Every default below reproduces the previous behaviour
+    # exactly, so nothing moves until a measurement says it should.
+
+    spectrum: str = "welch"
+    """How the power spectrum is estimated: "welch" or "periodogram".
+
+    Welch averages overlapping segments, which suppresses the variance of the
+    noise floor at the cost of frequency resolution -- with a 10 s window and
+    an 8 s segment there are barely two segments to average, so most of what
+    is paid for is not received. "periodogram" takes one Hann-windowed
+    transform of the whole window: no averaging, but the finest resolution the
+    window length allows, which is the thing that limits accuracy on a signal
+    that is close to a single tone.
+
+    Which is better is an empirical question about real traces and is exactly
+    what tune_rppg.py exists to answer. NOTE that SQI is a ratio of powers
+    within the spectrum, so changing the estimator moves SQI's numeric scale
+    (Hann leakage and Welch averaging spread a peak differently). Any tuning
+    run that changes this must re-tune min_sqi and patch_min_sqi with it, or
+    it will have silently changed every quality gate in the pipeline."""
+
+    welch_seg_sec: float = 8.0
+    """Welch segment length in seconds, capped at the window length. At 8 s
+    the bin width is 0.125 Hz = 7.5 BPM, which the raw argmax cannot resolve
+    -- hence the parabolic interpolation that follows it.
+
+    MEASURED: 6.0 is better, and by a lot -- MAE 15.3 -> 4.8 BPM on its own.
+    The reason is arithmetic that was never done. With a 10 s window and an 8 s
+    segment at 50% overlap there are about two segments, so almost none of
+    Welch's variance reduction is actually received, while its resolution cost
+    is paid in full. Six seconds buys real averaging of the noise floor, and
+    in this signal-to-noise regime that matters more than resolution does --
+    the peak's LOCATION is refined by interpolation anyway, but a spurious
+    peak cannot be interpolated away. See configs/rppg-tuned.json."""
+
+    zero_pad_factor: int = 1
+    """Transform length as a multiple of the window, rounded up to a power of
+    two. Zero-padding buys no true resolution -- the window length fixes that
+    -- but it removes the QUANTISATION error of picking the largest bin, which
+    parabolic interpolation only partly repairs. Cheap, and it makes the
+    reported rate a continuous function of the input instead of a staircase.
+
+    LEAVE THIS AT 1, AND THE REASON IS ALARMING RATHER THAN TECHNICAL.
+    Raising it to 2 takes the rate of asserting a pulse on a trace containing
+    none from 30% to 98%. The mechanics are correct -- on a clean signal
+    SQI is unchanged and the rate moves by 0.1 BPM -- so this is not a bug in
+    the padding. It is what the padding REVEALS.
+
+    The coarse 0.125 Hz grid was providing accidental protection. Each patch's
+    peak landed in a wide bin and the sub-bin correction differed per patch, so
+    nine patches watching a common-mode head-nod produced scattered estimates
+    and the agreement test refused them. Resolve the frequency precisely and
+    all nine patches lock onto the artefact and agree to within a BPM -- so
+    the agreement gate passes it, and the pipeline asserts 54 BPM from a nod.
+
+    Which is roi.py's own stated position, demonstrated numerically for the
+    first time: "three regions agreeing means they see the same thing, not
+    that the thing is a heartbeat." The agreement gate is weaker than it
+    looks, and it is currently being propped up by a quantisation artefact.
+    That wants fixing on purpose -- a common-mode rejection test rather than an
+    agreement test -- and until it is, this stays at 1."""
+
+    detrend_sec: float = 0.0
+    """Length of a moving-average baseline subtracted from each channel before
+    POS. 0 disables it, which is the paper's algorithm: POS already normalises
+    each block by its own mean, so a further detrend is redundant on a
+    stationary trace and helpful only when the baseline moves faster than a
+    block -- someone leaning toward the light. Off by default because
+    "helpful sometimes" is a hypothesis, not a setting."""
+
+    pos_overlap_normalise: bool = False
+    """Divide the overlap-add by the number of contributing blocks.
+
+    POS as published sums overlapping blocks without normalising, so the first
+    and last (step - 1) samples receive fewer contributions and are
+    attenuated. That is an implicit taper. A taper is not wrong -- it reduces
+    spectral leakage at the window edges -- but it is an ACCIDENTAL one whose
+    shape is set by the step length rather than chosen, and it interacts with
+    whatever window the spectrum estimator applies afterwards. Normalising
+    makes the taper explicit, i.e. absent. Left off by default because it is a
+    change to the published algorithm and should be adopted only on evidence."""
 
     specular_gray_max: int = 245
     shadow_gray_min: int = 15

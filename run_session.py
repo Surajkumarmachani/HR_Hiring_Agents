@@ -25,6 +25,13 @@ badly would silently misalign the two streams, and a misaligned response
 latency is worse than an absent one.
 
 Every output is descriptive. Nothing here scores a person.
+
+WHICH rPPG PATH RUNS
+--------------------
+The adaptive region selector (signals/roi.py), not the three fixed regions.
+That was not always true and the difference is large: see the comment beside
+the `--adaptive-roi` argument below. `--fixed-roi` restores the old path for
+comparison and should not be used for anything else.
 """
 
 import argparse
@@ -107,6 +114,9 @@ def main():
     ap.add_argument("--session", default=None, help="session id")
     ap.add_argument("--out-root", default="out/sessions")
     ap.add_argument("--no-body", action="store_true")
+    ap.add_argument("--fixed-roi", action="store_true",
+                    help="use the three FIXED rPPG regions instead of the "
+                         "adaptive selector. For comparison only; see below.")
     ap.add_argument("--transcribe", action="store_true",
                     help="transcribe locally and add Group E content measures")
     ap.add_argument("--question", default=None,
@@ -190,6 +200,28 @@ def main():
     cmd = [sys.executable, os.path.join(ROOT, "run_live.py"),
            "--video", media, "--headless", "--out", parquet,
            "--subject", rec["subject_id"]]
+    # ADAPTIVE ROI BY DEFAULT.
+    #
+    # This used to be absent, so every session ran the three FIXED regions --
+    # forehead and two cheeks -- which is the arrangement signals/roi.py was
+    # written to replace. The adaptive selector existed, was tested, and was
+    # never reached from the product path, because it was behind an opt-in flag
+    # that nothing opted into.
+    #
+    # What that cost, measured on session 20260903-180640: the three fixed
+    # regions disagreed by a median of 32 BPM and exceeded the pipeline's own
+    # 12 BPM agreement tolerance in 94% of frames, and the summary reported
+    # "77 BPM (sqi 0.49, coverage 100%)". The same recording through the
+    # adaptive path reports 50 BPM. Same code, same clip, 27 BPM apart, both
+    # looking equally confident.
+    #
+    # The adaptive path refuses far more often, which is the point: an
+    # estimate whose regions disagree is not a more cautious measurement, it
+    # is not a measurement. --fixed-roi keeps the old behaviour reachable so
+    # the two can be compared on the same recording, which is how the above
+    # was found.
+    if not args.fixed_roi:
+        cmd.append("--adaptive-roi")
     if args.no_body:
         cmd.append("--no-body")
     if args.config:
@@ -278,6 +310,17 @@ def _summary(r):
     if "bpm_median" in p:
         print(f"  pulse            {p['bpm_median']:.0f} BPM "
               f"(sqi {p['quality']:.2f}, coverage {p['coverage']*100:.0f}%)")
+        # `coverage` is the SQI gate's pass rate and reads as "it worked".
+        # Whether the regions of the face agreed about the rate is a separate
+        # question, and printing the number without it is how a 34 BPM
+        # disagreement got summarised as a confident 77 BPM.
+        if "roi_spread_bpm_median" in p:
+            print(f"                   regions disagreed by "
+                  f"{p['roi_spread_bpm_median']:.0f} BPM (median), over the "
+                  f"{p['agreement_tolerance_bpm']:.0f} BPM tolerance in "
+                  f"{p['frames_over_agreement_tolerance']*100:.0f}% of frames")
+        if p.get("warning"):
+            print(f"  !! NOT A MEASUREMENT: {p['warning']}")
     elif p:
         print(f"  pulse            {p.get('status', 'unavailable')}")
     if "_face_visibility" in idx:

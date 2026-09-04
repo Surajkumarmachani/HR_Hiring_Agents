@@ -22,6 +22,46 @@ Therefore this module ALWAYS emits a signal quality index (SQI) alongside
 the BPM. Downstream code must discard any BPM whose SQI is below threshold
 rather than showing the user a confident-looking number built on noise.
 
+WHAT IS NOW MEASURED RATHER THAN ASSUMED
+----------------------------------------
+The paragraph above used to be the whole of what this project knew about its
+own accuracy: published figures for somebody else's implementation. There is
+now an apparatus that measures THIS one.
+
+    python3 rppg_eval.py                 # score the current config
+    python3 tune_rppg.py                 # search the parameters
+    python3 rppg_truth.py guide          # how to record a reference pulse
+
+It rests on a synthetic corpus whose noise is calibrated to six real
+recordings (`rppg_traces.py --stats`): amplitude, in-band fraction, chromatic
+ratio and the resulting SQI all match measured values. Three findings from it
+are worth carrying here, because they say where this algorithm's accuracy
+comes from and where it does not.
+
+  1. POS's alpha nulls whichever single colour direction dominates, so a
+     purely achromatic artefact is nearly free at ANY amplitude -- 8.6% of DC,
+     fourteen times the pulse, costs 0.2 BPM. The same noise made chromatic
+     costs 20 BPM. The accuracy budget is set by the artefact's COLOUR, not
+     its size, which is the opposite of what "signal-to-noise ratio" suggests.
+
+  2. About 93% of a real patch mean's fluctuation power sits below the cardiac
+     band. The bandpass's lower corner therefore sits in a torrent of noise,
+     and moving it from 0.55 to 0.65 Hz is the single largest accuracy change
+     available -- at the cost of refusing more often below 50 BPM. See
+     config.RPPGConfig.filt_low_hz.
+
+  3. The patch-agreement gate is weaker than it looks. It currently depends on
+     a quantisation artefact: resolving the spectrum more finely makes nine
+     patches agree PRECISELY on a common-mode head-nod, and the fooled rate
+     goes from 30% to 98%. See config.RPPGConfig.zero_pad_factor.
+
+What none of it establishes is accuracy against a human pulse. No recording
+here has a contact reference attached, so every figure above is a claim about
+signal processing under realistically shaped noise and nothing more. On the
+real clips, scored on quantities that need no ground truth, the tuned
+parameters are neither corroborated nor contradicted. `rppg_truth.py` is what
+closes that, and it needs a phone and ten minutes rather than new code.
+
 HRV WARNING
 -----------
 Beat-to-beat variability (SDNN/RMSSD) requires accurate individual peak
@@ -70,12 +110,6 @@ class POSEstimator:
         self.last_harmonic_ratio = None
         self.last_subharmonic_corrected = False
 
-    def reset(self):
-        """Empty the RGB buffer. estimate() returns None until ~10 s of new
-        history has accumulated, which is the honest state after a refresh."""
-        self.rgb.clear()
-        self.times.clear()
-
     def update(self, rgb_mean, t=None):
         """Push one frame's mean RGB (3-vector) into the buffer.
 
@@ -118,23 +152,78 @@ class POSEstimator:
         return len(self.rgb) >= self.n
 
     # ---------------------------------------------------------------- POS
+    def _detrend(self, rgb: np.ndarray) -> np.ndarray:
+        """Subtract a moving-average baseline from each channel.
+
+        Off unless cfg.detrend_sec is set. POS normalises each block by its
+        own mean already, so this only reaches something the algorithm misses:
+        a baseline moving faster than one block, which is a subject leaning
+        into the light rather than a heartbeat.
+        """
+        w = int(round(self.cfg.detrend_sec * self.fps))
+        if w < 3 or w >= rgb.shape[0]:
+            return rgb
+        if w % 2 == 0:
+            w += 1
+        k = np.ones(w) / w
+        # 'same' with edge padding, so the ends are not pulled toward zero --
+        # an untreated edge here becomes a step, and a step is broadband.
+        pad = w // 2
+        out = np.empty_like(rgb)
+        for c in range(rgb.shape[1]):
+            x = np.pad(rgb[:, c], pad, mode="edge")
+            out[:, c] = rgb[:, c] - np.convolve(x, k, mode="valid")
+        return out + rgb.mean(axis=0)[None, :]
+
     def _pos_signal(self, rgb: np.ndarray) -> np.ndarray:
-        """Core POS transform. rgb is (N, 3)."""
+        """Core POS transform. rgb is (N, 3).
+
+        Vectorised over window position. The obvious transcription of the
+        paper is a Python loop over every one of the (N - L + 1) start
+        offsets, which is what this was: at a 10 s window and a 1.6 s step
+        that is ~250 iterations of tiny array operations per estimate, and the
+        live path runs one per patch per second across nine patches.
+
+        The rewrite does the same arithmetic on all offsets at once and then
+        performs the overlap-add as L accumulations of a length-M vector
+        rather than M accumulations of a length-L one -- L is 48 and M is 250,
+        so the loop that remains is the short one. Tuning made this necessary
+        (a parameter sweep re-runs the DSP tens of thousands of times) and the
+        live loop gets it for free.
+        """
         N = rgb.shape[0]
-        H = np.zeros(N, dtype=np.float64)
         L = self.step
-        for t in range(0, N - L + 1):
-            block = rgb[t:t + L]                       # (L, 3)
-            mu = block.mean(axis=0)
-            mu[mu == 0] = 1e-9
-            Cn = block / mu                            # temporal normalisation
-            # Project onto the plane orthogonal to the skin-tone direction
-            S1 = Cn[:, 1] - Cn[:, 2]                   # G - B
-            S2 = Cn[:, 1] + Cn[:, 2] - 2.0 * Cn[:, 0]  # G + B - 2R
-            s2std = S2.std()
-            alpha = (S1.std() / s2std) if s2std > 1e-9 else 0.0
-            h = S1 + alpha * S2
-            H[t:t + L] += h - h.mean()                 # overlap-add
+        M = N - L + 1
+        if M <= 0:
+            return np.zeros(N, dtype=np.float64)
+
+        # (M, L, 3): every window position, without copying the input.
+        blocks = np.lib.stride_tricks.sliding_window_view(rgb, L, axis=0)
+        blocks = np.moveaxis(blocks, -1, 1)            # (M, L, 3)
+
+        mu = blocks.mean(axis=1)                       # (M, 3)
+        mu = np.where(mu == 0.0, 1e-9, mu)
+        Cn = blocks / mu[:, None, :]                   # temporal normalisation
+        # Project onto the plane orthogonal to the skin-tone direction
+        S1 = Cn[:, :, 1] - Cn[:, :, 2]                 # G - B        (M, L)
+        S2 = Cn[:, :, 1] + Cn[:, :, 2] - 2.0 * Cn[:, :, 0]   # G + B - 2R
+        s2std = S2.std(axis=1)                         # (M,)
+        alpha = np.where(s2std > 1e-9, S1.std(axis=1) / np.where(
+            s2std > 1e-9, s2std, 1.0), 0.0)
+        h = S1 + alpha[:, None] * S2
+        h = h - h.mean(axis=1, keepdims=True)
+
+        H = np.zeros(N, dtype=np.float64)
+        for j in range(L):                             # L accumulations, not M
+            H[j:j + M] += h[:, j]
+        if self.cfg.pos_overlap_normalise:
+            # Without this the first and last (L-1) samples are attenuated,
+            # because fewer blocks reached them. See the config note: the
+            # taper is real either way, this makes it a choice.
+            counts = np.zeros(N, dtype=np.float64)
+            for j in range(L):
+                counts[j:j + M] += 1.0
+            H = H / np.maximum(counts, 1.0)
         return H
 
     def _bandpass(self, x: np.ndarray, fs=None) -> np.ndarray:
@@ -145,6 +234,52 @@ class POSEstimator:
             return x
         b, a = sps.butter(3, [low, high], btype="band")
         return sps.filtfilt(b, a, x)
+
+    def _spectrum(self, h: np.ndarray, fs: float):
+        """Power spectrum of the pulse waveform: (freqs, psd).
+
+        TWO ESTIMATORS, AND WHY THE CHOICE IS NOT OBVIOUS
+
+        Welch averages overlapping segments. That lowers the variance of the
+        noise floor, which is what you want when deciding whether a peak is
+        there at all -- and SQI is exactly that decision. But with a 10 s
+        window and an 8 s segment there are two segments, so the averaging is
+        nearly notional while the resolution cost is paid in full: 0.125 Hz
+        bins, 7.5 BPM apart.
+
+        A Hann-windowed periodogram over the whole window spends nothing on
+        averaging and gets the finest resolution the window length permits.
+        For locating a peak that is already known to be there -- which is the
+        job once the patch has passed its quality gates -- that is the better
+        trade. For deciding whether it is there, it is the worse one.
+
+        So this is genuinely a trade between the two things the module does
+        with the same spectrum, and it is settled by measurement rather than
+        by argument. Both are here; tune_rppg.py picks.
+        """
+        n = len(h)
+        if self.cfg.spectrum == "periodogram":
+            # Detrend explicitly: welch(detrend="linear") did this and a
+            # forgotten linear trend puts a large spike at DC whose leakage
+            # reaches into the cardiac band.
+            idx = np.arange(n, dtype=np.float64)
+            coef = np.polyfit(idx, h, 1)
+            x = h - np.polyval(coef, idx)
+            x = x * np.hanning(n)
+            nfft = int(2 ** np.ceil(np.log2(max(n * max(self.cfg.zero_pad_factor, 1),
+                                                8))))
+            spec = np.abs(np.fft.rfft(x, n=nfft)) ** 2
+            # Scale to a density so SQI's power ratios are unchanged in kind.
+            win_energy = (np.hanning(n) ** 2).sum()
+            psd = spec / (fs * max(win_energy, 1e-12))
+            return np.fft.rfftfreq(nfft, d=1.0 / fs), psd
+
+        nper = min(n, max(8, int(round(fs * self.cfg.welch_seg_sec))))
+        nfft = None
+        if self.cfg.zero_pad_factor > 1:
+            nfft = int(2 ** np.ceil(np.log2(nper * self.cfg.zero_pad_factor)))
+        return sps.welch(h, fs=fs, nperseg=nper, noverlap=nper // 2,
+                         nfft=nfft, detrend="linear")
 
     # ------------------------------------------------------------- output
     def estimate(self):
@@ -163,17 +298,14 @@ class POSEstimator:
             return None, 0.0, None                      # flat / dead ROI
 
         fs = self.effective_fps()
-        h = self._pos_signal(rgb)
+        h = self._pos_signal(self._detrend(rgb))
         h = self._bandpass(h, fs)
         h = h - h.mean()
         if h.std() < 1e-9:
             return None, 0.0, None
         h = h / h.std()
 
-        # Welch PSD with a full-window segment for frequency resolution
-        nper = min(len(h), int(fs * 8))
-        freqs, psd = sps.welch(h, fs=fs, nperseg=nper,
-                               noverlap=nper // 2, detrend="linear")
+        freqs, psd = self._spectrum(h, fs)
         band = (freqs >= self.cfg.search_low_hz) & (freqs <= self.cfg.search_high_hz)
         if not band.any() or psd[band].sum() <= 0:
             return None, 0.0, None

@@ -1,0 +1,194 @@
+I0000 00:00:1788438610.119795 4651979 init-domain.cc:128] Fiber init: default domain = pthread, concurrency = 8, prefix = pthread-default
+W0000 00:00:1788438610.122626 4651979 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438610.344181 4651979 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+W0000 00:00:1788438610.350093 4651982 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438610.360104 4651982 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+
+out/sessions/20260831-162908/recording.mp4
+    recording.mp4: 300 frames, 10s
+    recording.mp4: 600 frames, 20s
+    recording.mp4: 900 frames, 30s
+W0000 00:00:1788438620.342930 4652356 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438620.347697 4652356 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1788438620.349030 4652359 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438620.359132 4652361 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+2026-09-03 18:00:27.906 Python[29365:4652037] WARNING [geo/render/ion/net/abstractnetworkmanager.cc:154] Network error: 500 for url: https://play.googleapis.com/log
+E0000 00:00:1788438627.906606 4652037 portable_clearcut_uploader.cc:154] Failed sending LogRequest to clearcut backend: HttpResponse[500]
+	Headers:
+		Alt-Svc:  h3=":443"; ma=2592000,h3-29=":443"; ma=2592000
+		Content-Length:  1730
+		Content-Type:  text/html; charset=UTF-8
+		Date:  Thu, 03 Sep 2026 12:30:27 GMT
+		Server:  Playlog
+		x-frame-options:  SAMEORIGIN
+		x-xss-protection:  0
+E0000 00:00:1788438627.906676 4652357 portable_clearcut_uploader.cc:90] Failed to send to clearcut: UNKNOWN: Error sending LogRequest to clearcut backend, error code: 500
+=== Source Location Trace: ===
+wireless/android/play/playlog/cplusplus/portable_clearcut_uploader.cc:168
+W0000 00:00:1788438627.934943 4652668 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438627.942850 4652668 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1788438627.945522 4652674 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438627.959185 4652674 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  cached: out/rppg-traces/20260831-162908--recording--4a1c1fca3f02.npz  (1063 frames)
+  35.6s  fps real 29.86 vs nominal 29.86   inter-patch r 0.249
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.8%         6.15/7.62/6.71  0.079   0.419
+    forehead_c     99.8%         6.33/9.07/8.85  0.107   0.247
+    forehead_r     99.8%         4.24/5.73/6.55  0.090   0.395
+    glabella       99.8%         8.95/8.85/9.15  0.151   0.373
+    malar_l        99.7%         8.11/9.58/9.04  0.090   0.239
+    malar_r        98.4%      10.05/11.69/12.68  0.060   0.208
+    temple_l       99.8%      10.20/11.14/10.82  0.056   0.325
+    temple_r       99.8%         6.79/6.07/5.69  0.082   0.437
+    nose_bridge    98.7%         3.84/3.85/4.07  0.174   0.551
+
+out/sessions/20260831-163104/recording.mp4
+  cached: out/rppg-traces/20260831-163104--recording--4a1c1fca3f02.npz  (240 frames)
+  8.0s  fps real 30.0 vs nominal 30.0   inter-patch r 0.151
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.2%         6.12/7.87/7.15  0.174   0.315
+    forehead_c     99.2%         1.97/2.17/2.29  0.423   0.748
+    forehead_r     99.2%         2.31/5.03/7.15  0.353   0.511
+    glabella       99.2%         7.98/8.43/8.41  0.609   0.303
+    malar_l        99.2%         6.75/8.25/8.20  0.228   0.307
+    malar_r        99.2%         3.51/6.62/8.67  0.091   0.426
+    temple_l       99.2%        10.14/9.21/8.07  0.138   0.349
+    temple_r       99.2%         4.93/5.80/6.94  0.058   0.334
+    nose_bridge    99.2%         2.20/2.02/3.13  0.512   1.165
+
+out/sessions/20260831-163225/recording.mp4
+    recording.mp4: 300 frames, 10s
+    recording.mp4: 600 frames, 20s
+    recording.mp4: 900 frames, 30s
+    recording.mp4: 1200 frames, 40s
+    recording.mp4: 1500 frames, 50s
+    recording.mp4: 1800 frames, 60s
+W0000 00:00:1788438645.049918 4653315 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438645.054872 4653315 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1788438645.056100 4653318 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438645.070859 4653319 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  cached: out/rppg-traces/20260831-163225--recording--4a1c1fca3f02.npz  (1800 frames)
+  60.0s  fps real 30.0 vs nominal 30.0   inter-patch r -0.014
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.9%         8.15/8.66/6.13  0.024   0.436
+    forehead_c     99.9%         3.48/5.59/5.34  0.046   0.240
+    forehead_r     99.9%         3.47/5.57/6.95  0.033   0.358
+    glabella       99.9%        8.99/9.65/10.35  0.193   0.321
+    malar_l        99.9%      10.75/11.82/10.66  0.012   0.173
+    malar_r        99.9%        5.27/8.65/10.75  0.031   0.315
+    temple_l       99.9%        10.79/9.17/6.07  0.034   0.523
+    temple_r       99.9%         8.84/8.92/8.38  0.017   0.177
+    nose_bridge    99.9%         3.08/2.89/2.88  0.153   0.516
+
+out/sessions/20260831-165617/recording.mp4
+    recording.mp4: 300 frames, 10s
+    recording.mp4: 600 frames, 20s
+    recording.mp4: 900 frames, 30s
+    recording.mp4: 1200 frames, 40s
+    recording.mp4: 1500 frames, 50s
+    recording.mp4: 1800 frames, 60s
+W0000 00:00:1788438662.311193 4654014 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438662.318407 4654014 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1788438662.320764 4654018 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438662.329355 4654019 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  cached: out/rppg-traces/20260831-165617--recording--4a1c1fca3f02.npz  (1800 frames)
+  60.0s  fps real 30.0 vs nominal 30.0   inter-patch r 0.011
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.9%         5.70/8.91/9.07  0.027   0.175
+    forehead_c     99.9%         2.12/4.68/5.90  0.090   0.371
+    forehead_r     99.9%        5.81/8.35/10.07  0.036   0.290
+    glabella       99.9%      10.05/11.93/12.48  0.173   0.188
+    malar_l        99.9%       7.93/11.50/12.34  0.020   0.187
+    malar_r        99.9%       9.07/13.05/15.33  0.030   0.247
+    temple_l       99.9%       10.38/10.36/8.13  0.028   0.304
+    temple_r       99.9%        11.26/9.40/8.19  0.019   0.265
+    nose_bridge    99.9%         3.64/4.05/4.33  0.264   0.386
+
+out/sessions/20260831-171638/recording.mp4
+    recording.mp4: 300 frames, 10s
+    recording.mp4: 600 frames, 20s
+W0000 00:00:1788438671.064362 4654414 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438671.069180 4654414 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1788438671.070858 4654416 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438671.084152 4654416 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  cached: out/rppg-traces/20260831-171638--recording--4a1c1fca3f02.npz  (899 frames)
+  30.0s  fps real 29.97 vs nominal 29.97   inter-patch r 0.093
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.8%         6.93/8.95/7.90  0.052   0.386
+    forehead_c     99.8%         3.17/6.31/7.76  0.087   0.417
+    forehead_r     99.8%        5.89/9.16/12.06  0.055   0.419
+    glabella       99.8%       9.99/10.78/10.75  0.350   0.354
+    malar_l        99.8%       8.26/10.87/10.75  0.047   0.262
+    malar_r        99.3%      11.10/15.22/18.26  0.041   0.271
+    temple_l       99.8%        10.46/8.38/5.93  0.106   0.640
+    temple_r       99.8%       10.81/10.05/9.74  0.044   0.236
+    nose_bridge    99.8%         4.00/4.19/4.63  0.313   0.533
+
+out/sessions/20260831-172233/recording.mp4
+    recording.mp4: 300 frames, 10s
+    recording.mp4: 600 frames, 20s
+    recording.mp4: 900 frames, 30s
+    recording.mp4: 1200 frames, 40s
+    recording.mp4: 1500 frames, 50s
+    recording.mp4: 1800 frames, 60s
+W0000 00:00:1788438687.868804 4655072 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438687.872948 4655072 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1788438687.874147 4655075 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438687.880939 4655075 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  cached: out/rppg-traces/20260831-172233--recording--4a1c1fca3f02.npz  (1800 frames)
+  60.0s  fps real 30.0 vs nominal 30.0   inter-patch r 0.143
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.4%       7.22/10.64/11.40  0.075   0.232
+    forehead_c     99.4%         3.07/6.37/7.91  0.047   0.357
+    forehead_r     99.4%        6.19/8.82/10.44  0.095   0.267
+    glabella       99.4%       9.02/10.51/10.99  0.168   0.207
+    malar_l        99.4%       9.64/12.01/12.96  0.032   0.237
+    malar_r        99.4%      12.40/15.57/17.55  0.070   0.183
+    temple_l       99.4%       10.82/10.05/8.66  0.083   0.325
+    temple_r       99.4%         8.76/8.09/7.81  0.051   0.281
+    nose_bridge    99.4%         4.42/4.64/4.79  0.172   0.331
+
+out/sessions/20260903-175312/recording.mp4
+    recording.mp4: 300 frames, 10s
+    recording.mp4: 600 frames, 20s
+    recording.mp4: 900 frames, 30s
+    recording.mp4: 1200 frames, 40s
+    recording.mp4: 1500 frames, 50s
+W0000 00:00:1788438704.058456 4655713 face_landmarker_graph.cc:180] Sets FaceBlendshapesGraph acceleration to xnnpack by default.
+I0000 00:00:1788438704.062930 4655713 gl_context.cc:407] GL version: 2.1 (2.1 Metal - 90.5), renderer: Apple M1
+W0000 00:00:1788438704.064032 4655717 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+W0000 00:00:1788438704.073740 4655716 inference_feedback_manager.cc:121] Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.
+  cached: out/rppg-traces/20260903-175312--recording--4a1c1fca3f02.npz  (1791 frames)
+  60.0s  fps real 29.85 vs nominal 29.85   inter-patch r 0.149
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.4%         1.24/2.32/3.36  0.237   0.635
+    forehead_c     99.4%         1.75/4.32/6.67  0.052   0.595
+    forehead_r     99.4%         2.12/3.37/4.29  0.168   0.433
+    glabella       99.4%         5.86/5.97/6.05  0.127   0.267
+    malar_l        99.4%         2.46/3.07/3.48  0.154   0.373
+    malar_r        99.4%         2.77/4.11/4.68  0.356   0.357
+    temple_l       99.4%         1.99/2.32/2.96  0.239   0.619
+    temple_r       99.4%         3.90/4.30/4.37  0.126   0.258
+    nose_bridge    99.4%         3.27/3.30/3.31  0.220   0.428
+
+out/sessions/20260903-175537/recording.mp4
+    recording.mp4: 300 frames, 10s
+    recording.mp4: 600 frames, 20s
+    recording.mp4: 900 frames, 30s
+    recording.mp4: 1200 frames, 40s
+    recording.mp4: 1500 frames, 50s
+  cached: out/rppg-traces/20260903-175537--recording--4a1c1fca3f02.npz  (1796 frames)
+  60.0s  fps real 29.93 vs nominal 29.93   inter-patch r 0.087
+    patch          cover              AC% R/G/B   band  chroma
+    forehead_l     99.9%         3.00/4.84/6.11  0.095   0.377
+    forehead_c     99.9%        4.67/8.98/11.89  0.058   0.387
+    forehead_r     99.8%       9.66/12.55/14.47  0.047   0.207
+    glabella       99.9%         5.22/5.39/5.19  0.463   0.309
+    malar_l        99.9%         3.40/5.11/5.84  0.148   0.352
+    malar_r        99.4%         6.75/9.28/8.24  0.029   0.505
+    temple_l       99.9%         4.88/6.51/7.56  0.052   0.270
+    temple_r       99.9%      13.52/14.46/14.88  0.048   0.115
+    nose_bridge    99.9%         5.10/6.29/6.62  0.179   0.255
+
+wrote out/rppg-real-stats.json

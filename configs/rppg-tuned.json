@@ -1,0 +1,6 @@
+{
+  "rppg": {
+    "filt_low_hz": 0.65,
+    "welch_seg_sec": 6.0
+  }
+}
