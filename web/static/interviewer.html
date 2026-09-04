@@ -8,6 +8,8 @@
     <h1 id="title">Interview</h1>
     <span class="meta" id="sub">connecting…</span>
     <span class="hud-live off" id="livestate"><span class="dot"></span><span id="livetxt">standby</span></span>
+    <button class="ccbtn" id="ccBtn" aria-pressed="true"
+            title="Show suggestions as captions over the call">CC</button>
   </div>
   <div id="lockstate"></div>
 
@@ -52,12 +54,12 @@
         <header>ask next
           <span class="badge" id="autoBadge">auto</span></header>
         <div class="mic-row">
-          <button class="ghost" id="suggestBtn">Suggest now</button>
+          <button class="ghost" id="suggestBtn" disabled>Suggest now</button>
           <label class="autotog"><input type="checkbox" id="autoSuggest" checked>
             <span>suggest automatically when they finish answering</span></label>
         </div>
-        <p class="hint" id="suggestMsg" style="padding:0 11px 8px">Available
-          once they have answered something.</p>
+        <p class="hint" id="suggestMsg" style="padding:0 11px 8px">Ask a
+          question first &mdash; a suggestion responds to an answer.</p>
         <div id="suggestOut"></div>
       </div>
 
@@ -82,6 +84,7 @@
         </div>
 
         <div id="assessOut"></div>
+
 
         <div class="nextrow" id="nextRow" hidden>
           <button class="ghost" id="nextQ">Next question &rarr;</button>
@@ -131,21 +134,14 @@
 
     <div class="card" id="gencard" hidden>
       <h3>Build the interview from the candidate's CV</h3>
-      <p>The questions are written from what this CV actually claims. Each one
-         comes with <em>what to listen for</em> — so you can tell a deep answer
-         from a fluent one even outside your own field — and the one follow-up
-         to use if the answer stays shallow.</p>
-      <p>What you <em>rate</em> does not come from the CV: the competencies and
-         their anchors are fixed and identical for every candidate for this
-         role. The questions differ; the scale does not.</p>
+      <p>Questions come from the CV. The competencies you rate against do not —
+         those are fixed and identical for every candidate for this role.</p>
       <div class="row">
         <input type="file" id="cvFile" accept=".pdf,.docx,.txt,.md">
         <button class="ghost" id="cvUpload">Upload CV</button>
         <span class="hint" id="cvMsg"></span>
       </div>
-      <p class="hint" id="bandNote">Pick the depth. You can change it at any
-        point in the interview — switching rebuilds the questions at the new
-        depth, and you can switch back.</p>
+      <p class="hint" id="bandNote">Pick the depth. You can change it later.</p>
       <div class="row" id="bandRow"></div>
       <span class="err" id="genErr"></span>
       <div id="genOut"></div>
@@ -167,6 +163,28 @@
 
   <section id="panel" hidden><h2 id="panelHead">Panel</h2>
     <div id="summary"></div></section>
+</div>
+
+<!-- Captions, not a panel.
+     A suggestion is only useful in the few seconds after the candidate stops
+     talking, and in those seconds the interviewer should be looking at the
+     candidate. A side panel makes them visibly look away -- the candidate
+     watches their interviewer start reading something. Over the call, in the
+     place a viewer's eyes already are, it is read without breaking the
+     conversation. Same reason subtitles sit there and not beside the film.
+     Off means off: no panel, no card, nothing on screen. -->
+<div id="captionBar" hidden>
+  <div class="cap-head">
+    <span class="cap-kind" id="capKind"></span>
+    <span class="cap-nav" id="capNav" hidden>
+      <button id="capPrev" title="previous">&lsaquo;</button>
+      <span id="capCount"></span>
+      <button id="capNext" title="next">&rsaquo;</button>
+    </span>
+    <button class="cap-x" id="capClose" title="hide">&times;</button>
+  </div>
+  <p class="cap-text" id="capText"></p>
+  <p class="cap-sub" id="capSub"></p>
 </div>
 <script>
 const $ = s => document.querySelector(s);
@@ -751,6 +769,7 @@ function renderPhase() {
   }
   if (phase === "questions") renderGenerated();
   renderSuggestions();
+  updateSuggestGate();
   renderAssessment();
   renderTranscriptState();
 }
@@ -799,32 +818,86 @@ function renderSuggestions() {
   // noise at the moment you need to read one -- they are still recorded, and
   // still listed, just not competing for the same attention.
   const [latest, ...older] = list;
-  $("#suggestOut").innerHTML = (latest ? `
-    <div class="card sug latest${latest.asked ? " asked" : ""}">
-      <h3>${esc(latest.text)}</h3>
-      <p class="hint">${esc(latest.why_now || "")}</p>
-      <div class="listen"><b>Listen for</b>${esc(latest.listen_for || "")}</div>
-      <p class="hint">evidence for: ${esc(latest.competency_id)}${
-        latest.grounded_in ? ` &middot; they said: ${esc(latest.grounded_in)}` : ""}</p>
-      <div class="row"><button class="ghost mark" data-q="${latest.id}" ${
-        latest.asked ? "disabled" : ""}>${
-        latest.asked ? "Asked" : "Mark as asked"}</button></div>
-    </div>` : "") + (older.length ? `
-    <details class="sugold"><summary>${older.length} earlier suggestion${
-      older.length > 1 ? "s" : ""}</summary>
-      ${older.map(sg => `<p class="probe gen${sg.asked ? " asked" : ""}">${
+  // The newest suggestion goes to the CAPTION, not into this panel. What
+  // stays here is the history: a collapsed list of what was suggested
+  // earlier, which is a record to look back at rather than something to read
+  // mid-answer. Only the counter-questions displace it, because those are a
+  // response to an answer that has just been scored and are more current.
+  if (latest && !lastCountersShown) {
+    showCaption("suggested question", [latest]);
+  }
+  $("#suggestOut").innerHTML = (older.length || latest ? `
+    <details class="sugold"><summary>${list.length} suggestion${
+      list.length > 1 ? "s" : ""} so far</summary>
+      ${list.map(sg => `<p class="probe gen${sg.asked ? " asked" : ""}">${
         esc(sg.text)}</p>`).join("")}
     </details>` : "");
-  document.querySelectorAll("#suggestOut .mark").forEach(b => {
-    b.onclick = () => markAsked(b.dataset.q);
-  });
+  // No "mark as asked" here on purpose. A suggestion is something to READ
+  // and decide about; the record of what was actually put to the candidate is
+  // kept from the question list, where the interviewer presses "Ask this".
+  // Two controls that both write `asked` invite the panel to record a
+  // question they only considered.
+  updateSuggestGate();
+}
+
+// Nothing is suggested before a question has been asked.
+//
+// A suggestion is a RESPONSE to an answer. Before the first question there is
+// no answer, and what came back was an opening question -- the system telling
+// an interviewer how to start their own interview. Enforced in web/server.py
+// as well; this is so the button says why rather than spending a request to
+// be told no.
+function suggestGateReason() {
+  if (!(S.asked || []).length) {
+    return "Ask a question first — a suggestion responds to an answer.";
+  }
+  return null;
+}
+
+function updateSuggestGate() {
+  const why = suggestGateReason();
+  const btn = $("#suggestBtn");
+  if (!btn) return;
+  btn.disabled = !!why || inFlight;
+  if (why) $("#suggestMsg").textContent = why;
 }
 
 async function markAsked(qid) {
   const r = await fetch(`/api/sessions/${SID}/questions/asked`, {
     method: "POST", headers: {"content-type": "application/json"},
     body: JSON.stringify({who: WHO, t: T, question_id: qid})});
-  if (r.ok) await reload();
+  if (r.ok) {
+    await reload();
+    revealTable();
+  }
+}
+
+// Pressing "Ask this" moves the question UP the page, to "on the table now",
+// and the button that did it is below the fold from there. The interviewer
+// then has to go and find the thing they just put somewhere -- at the exact
+// moment they are meant to be reading it aloud to a candidate who is waiting.
+//
+// So the page goes to the TOP, not to the section.
+//
+// scrollIntoView({block: "start"}) was the obvious call and it left the
+// question unreadable: `.asknext` is position:sticky at top:10px with a
+// z-index, so it pins to the top of the working column and covers whatever
+// scrolls beneath it. Putting the section's top edge at the viewport's top
+// edge parks it exactly under the sticky panel -- the header and the score
+// badge were clipped off and the question itself was behind ASK NEXT.
+//
+// Offsetting by the sticky panel's height would work until the panel's
+// height changed, which it does on every suggestion. The whole working
+// column is only two sections deep above the question -- ASK NEXT then this
+// -- so scroll position 0 shows both, in their natural places, with nothing
+// overlapping anything. Simpler, and it cannot be wrong by a few pixels.
+function revealTable() {
+  const sec = $("#assesssec");
+  if (!sec || sec.hidden) return;
+  // Already at the top: nothing to do. Scrolling a page that has not moved
+  // is a jolt in the middle of a conversation.
+  if (window.scrollY < 8) return;
+  window.scrollTo({top: 0, behavior: "smooth"});
 }
 
 // ---- automatic suggestion --------------------------------------------
@@ -895,6 +968,10 @@ function candidateSpoke(textLen) {
   clearTimeout(autoTimer);
   autoTimer = setTimeout(() => {
     if (inFlight || assessInFlight) return;
+    // Same gate as the button. Without it the automatic path would fire on
+    // the candidate's opening pleasantries, which is exactly the case this
+    // exists to stop.
+    if (suggestGateReason()) return;
     // Not enough new speech to be a new answer -- most likely a short
     // interjection, and firing on it would spend a request on nothing.
     if (candChars - charsAtLastSuggest < AUTO_MIN_NEW_CHARS) return;
@@ -1012,6 +1089,8 @@ function renderAssessment() {
   if (!a) {
     badge.hidden = true;
     $("#assessOut").innerHTML = "";
+    lastCountersShown = false;
+    clearCaption();
     return;
   }
   const r = a.read || {};
@@ -1056,28 +1135,94 @@ function renderAssessment() {
         ? " You had already locked when you asked for this, so it cannot have"
         + " shaped your ratings." : ""}</p>
     </div>
-    ${counters.length ? `
-    <div class="jcounters"><b>Counter-question${counters.length > 1 ? "s" : ""}
-      — ${counters.length > 1 ? "these test" : "this tests"} the claims</b>
-      ${counters.map(c => `
-        <div class="card sug${c.asked ? " asked" : ""}">
-          <h3>${esc(c.text)}</h3>
-          ${c.targets ? `<p class="hint">tests: ${esc(c.targets)}</p>` : ""}
-          ${c.listen_for ? `<div class="listen"><b>Listen for</b>${
-            esc(c.listen_for)}</div>` : ""}
-          <p class="hint">evidence for: ${esc(c.competency_id)}${
-            c.why ? ` &middot; ${esc(c.why)}` : ""}</p>
-          <div class="row"><button class="ghost mark" data-q="${c.id}" ${
-            c.asked ? "disabled" : ""}>${
-            c.asked ? "Asked" : "Ask this"}</button></div>
-        </div>`).join("")}
-    </div>` : `<p class="hint" style="padding:0 11px 11px">No
-      counter-question — nothing in that answer needs pressing on.</p>`}`;
+    `;
 
-  document.querySelectorAll("#assessOut .mark").forEach(b => {
-    b.onclick = () => markAsked(b.dataset.q);
-  });
+  lastCountersShown = true;
+  showCaption(
+    counters.length
+      ? `counter-question${counters.length > 1 ? "s" : ""}`
+      : "nothing to press on",
+    counters.length ? counters
+      : [{text: "That answer held up — nothing in it needs pressing on.",
+          listen_for: ""}]);
 }
+
+// ---- captions -------------------------------------------------------
+// One queue, shown one item at a time over the call. Counter-questions after
+// an answer has been scored; a suggestion when there is no question on the
+// table. The interviewer reads it without taking their eyes off the
+// candidate, which is the entire reason it is here and not in a panel.
+//
+// CC off means nothing renders anywhere. That is the contract: a toggle that
+// only moved the text somewhere else would be worse than no toggle.
+let capQueue = [], capAt = 0, lastCountersShown = false;
+let capOn = localStorage.getItem("hud.cc") !== "0";
+
+function setCC(on) {
+  capOn = on;
+  localStorage.setItem("hud.cc", on ? "1" : "0");
+  const b = $("#ccBtn");
+  // aria-pressed is the single source of truth: the CSS styles off it, so
+  // the look and what a screen reader is told cannot drift apart.
+  b.setAttribute("aria-pressed", on ? "true" : "false");
+  b.title = on ? "Captions ON — click to stop showing suggestions over the call"
+               : "Captions OFF — click to show suggestions over the call";
+  drawCaption();
+}
+
+function showCaption(kind, items) {
+  // Newest wins outright rather than queueing behind the last one. A
+  // counter-question to the PREVIOUS answer, still on screen while the
+  // candidate answers the next one, sends the interviewer to press on
+  // something that has already moved on.
+  capQueue = (items || []).filter(x => x && x.text);
+  capAt = 0;
+  $("#capKind").textContent = kind;
+  drawCaption();
+}
+
+function clearCaption() {
+  capQueue = [];
+  capAt = 0;
+  drawCaption();
+}
+
+function drawCaption() {
+  const bar = $("#captionBar");
+  const show = capOn && capQueue.length > 0;
+  // The page reserves room for the caption only while one is on screen, so
+  // "off" looks like a page that never had captions rather than one with a
+  // gap where they would have been.
+  document.body.classList.toggle("capped", show);
+  if (!show) { bar.hidden = true; return; }
+  capAt = Math.max(0, Math.min(capAt, capQueue.length - 1));
+  const it = capQueue[capAt];
+  bar.hidden = false;
+  $("#capText").textContent = it.text;
+  // The "listen for" line is what lets an interviewer judge an answer in a
+  // domain they do not know. It is the reason this is worth reading at all,
+  // so it stays -- small, under the question, the way a caption carries a
+  // speaker name.
+  $("#capSub").textContent = it.listen_for || it.targets || "";
+  $("#capSub").hidden = !$("#capSub").textContent;
+  const many = capQueue.length > 1;
+  $("#capNav").hidden = !many;
+  if (many) $("#capCount").textContent = `${capAt + 1}/${capQueue.length}`;
+}
+
+$("#ccBtn").onclick = () => setCC(!capOn);
+$("#capClose").onclick = () => { clearCaption(); };
+$("#capPrev").onclick = () => { capAt--; drawCaption(); };
+$("#capNext").onclick = () => { capAt++; drawCaption(); };
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, textarea, select")) return;
+  if (e.key === "c" || e.key === "C") setCC(!capOn);
+  else if (!$("#captionBar").hidden && capQueue.length > 1) {
+    if (e.key === "ArrowRight") { capAt++; drawCaption(); }
+    else if (e.key === "ArrowLeft") { capAt--; drawCaption(); }
+  }
+});
+setCC(capOn);
 
 let assessInFlight = false;
 
@@ -1173,6 +1318,9 @@ $("#ownSave").onclick = async () => {
   $("#ownText").value = "";
   $("#ownBox").hidden = true;
   await reload();
+  // Recording your own question puts it on the table too, so the page
+  // follows it for the same reason.
+  revealTable();
 };
 
 function renderQuestions() {
@@ -1237,8 +1385,7 @@ function renderGeneration() {
     const used = g.bands_used || [];
     const label = k => (g.bands[k] || {}).label || k;
     $("#bandNote").textContent =
-      `Now at ${label(current)}. Press any band to rebuild the questions at `
-      + `that depth — it replaces the set, and you can switch back.`
+      `Now at ${label(current)}. Press any band to rebuild at that depth.`
       + (used.length > 1
          ? ` So far: ${used.map(label).join(" \u2192 ")}.` : "");
   }

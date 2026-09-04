@@ -35,6 +35,14 @@ with sex, age and body size, so f0_mean across people measures anatomy far
 more than it measures delivery. Only the WITHIN-speaker measures (range,
 slope, declination, variability) carry delivery information, and even those
 carry accent and language background. Nothing here is a competence signal.
+
+WHAT THIS WILL NOT INFER
+------------------------
+Emotion, personality, truthfulness and hireability are deliberately not
+derived from these measures. A delivery profile can say "faster pace",
+"frequent pauses" or "narrow pitch range"; it cannot say "nervous",
+"dishonest", "introverted" or "hireable". Those are judgements about the
+person, not measurements of the recording.
 """
 
 import subprocess
@@ -49,6 +57,27 @@ from config import CONFIG
 
 class AudioError(RuntimeError):
     pass
+
+
+UNSUPPORTED_JUDGEMENTS = {
+    "emotion": (
+        "Prosody can describe pitch, energy, pace and pauses, but it does not "
+        "establish the candidate's internal emotional state in an interview."
+    ),
+    "personality": (
+        "No stable personality trait is measured here; cross-person pitch, "
+        "tempo and loudness are heavily confounded by physiology, language, "
+        "culture, microphone and setting."
+    ),
+    "truthfulness": (
+        "There is no lie-detector signal in this audio path. Pauses, pitch and "
+        "arousal are compatible with many ordinary interview states."
+    ),
+    "hireability": (
+        "Hiring suitability belongs to the structured interview ratings and "
+        "quoted evidence, not to behavioural or prosodic measurements."
+    ),
+}
 
 
 # ------------------------------------------------------------------ input
@@ -419,6 +448,226 @@ def interaction(subject_x, interviewer_x, sr, cfg=None):
         "_subject_speech_s": float(s_time),
         "_interviewer_speech_s": float(i_time),
     }
+
+
+# ----------------------------------------------------------- interpretation
+def _numeric(value):
+    """A finite float, or None. The only place a measure becomes a number.
+
+    `isinstance(value, (int, float))` was the obvious test and it is subtly
+    wrong in both directions. It ACCEPTS bool -- True is an int, so a flag
+    would have been banded as a value. And it REJECTS numpy scalars that are
+    not Python floats: np.float64 passes because it subclasses float, but
+    np.float32 and every numpy integer type do not. Those would have been
+    described as "not measurable" -- silently, for the life of the deployment,
+    with no error anywhere.
+
+    Nothing feeds numpy scalars in today: analyse(), interaction() and the
+    Group E measures all return Python scalars, and that was checked rather
+    than assumed. But it is one refactor away in a codebase that is numpy
+    throughout, and the failure would be invisible: a descriptor reading "not
+    measurable" is indistinguishable from a measure that genuinely could not
+    be taken. Coerce and let the exception cases be explicit.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    return v if np.isfinite(v) else None
+
+
+def _band(value, low, high, low_label, mid_label, high_label):
+    v = _numeric(value)
+    if v is None:
+        return "not measurable"
+    if v < low:
+        return low_label
+    if v <= high:
+        return mid_label
+    return high_label
+
+
+def _descriptor(label, value=None, unit="", note=None, evidence=None):
+    out = {"label": label}
+    if value is not None:
+        out["value"] = float(value) if isinstance(value, (int, float)) else value
+    if unit:
+        out["unit"] = unit
+    if note:
+        out["note"] = note
+    if evidence:
+        out["evidence"] = evidence
+    return out
+
+
+def delivery_profile(measures, cfg=None):
+    """Summarise audio measures as non-decisional delivery descriptors.
+
+    This is the safe layer to put in front of a human: it translates raw
+    measurements into plain descriptions while refusing the tempting but
+    invalid labels (emotion, personality, truthfulness, hireability).
+
+    Band edges come from config.DeliveryProfileConfig and therefore enter
+    Config.digest(). They are readability rules of thumb, not clinical norms
+    and not hiring cut-points -- but they decide the SENTENCE a panel reads
+    about a person, so which values produced a given description has to be
+    recoverable from the record rather than from the source tree at the time.
+    The raw value travels beside every label for the same reason.
+    """
+    m = measures or {}
+    c = (cfg or CONFIG).delivery
+    out = {
+        "status": m.get("_status", "ok"),
+        "scope": (
+            "Delivery descriptors only. Not an emotion detector, personality "
+            "test, truthfulness estimate or hireability score."
+        ),
+        "unsupported": dict(UNSUPPORTED_JUDGEMENTS),
+        "descriptors": {},
+        "warnings": [],
+    }
+    d = out["descriptors"]
+
+    if out["status"] != "ok":
+        out["warnings"].append(
+            f"audio analysis status is {out['status']}; descriptors may be "
+            "missing or unusable")
+
+    snr = m.get("audio_snr")
+    if snr is not None and snr < c.snr_floor_db:
+        out["warnings"].append(
+            f"audio SNR is {snr:.1f} dB, below the "
+            f"{c.snr_floor_db:.0f} dB voice-quality floor")
+
+    if m.get("_tempo_status"):
+        out["warnings"].append(m["_tempo_status"])
+    if m.get("_asr_warning"):
+        out["warnings"].append(m["_asr_warning"])
+
+    speech_rate = m.get("speech_rate")
+    d["pace"] = _descriptor(
+        _band(speech_rate, c.speech_rate_low, c.speech_rate_high,
+              "slower overall pace",
+              "moderate overall pace", "faster overall pace"),
+        speech_rate, "syllables/s including pauses",
+        "Language, question type and register affect this.")
+
+    articulation = m.get("articulation_rate")
+    d["articulation"] = _descriptor(
+        _band(articulation, c.articulation_low, c.articulation_high,
+              "slower while speaking",
+              "moderate while speaking", "faster while speaking"),
+        articulation, "syllables/s excluding pauses",
+        "Separates speaking speed from silence between phrases.")
+
+    pause_count = m.get("pause_count")
+    pause_mean = m.get("pause_mean_dur")
+    if pause_count is None and pause_mean is None:
+        pause_label = "not measurable"
+    elif ((pause_count is not None and pause_count >= c.pause_count_high_per_min)
+          or (pause_mean is not None and pause_mean >= c.pause_mean_high_s)):
+        pause_label = "more pausing"
+    elif ((pause_count is not None and pause_count <= c.pause_count_low_per_min)
+          and (pause_mean is None or pause_mean < c.pause_mean_low_s)):
+        pause_label = "less pausing"
+    else:
+        pause_label = "moderate pausing"
+    d["pausing"] = _descriptor(
+        pause_label, note="Pauses are thinking time, turn-taking and audio VAD "
+        "behaviour; they are not a truthfulness signal.",
+        evidence={"pause_count_per_min": pause_count,
+                  "pause_mean_dur_s": pause_mean})
+
+    f0_range = m.get("f0_range")
+    d["pitch_range"] = _descriptor(
+        _band(f0_range, c.f0_range_low_hz, c.f0_range_high_hz,
+              "narrower pitch range",
+              "moderate pitch range", "wider pitch range"),
+        f0_range, "Hz",
+        "Within-speaker delivery descriptor; mean pitch is mostly physiology.")
+
+    slope = _numeric(m.get("f0_slope"))
+    if slope is None:
+        contour = "not measurable"
+    elif slope > c.f0_slope_flat_hz_per_s:
+        contour = "rising contour"
+    elif slope < -c.f0_slope_flat_hz_per_s:
+        contour = "falling contour"
+    else:
+        contour = "level contour"
+    d["pitch_contour"] = _descriptor(
+        contour, slope, "Hz/s",
+        "Intonation differs by language and dialect; do not read as certainty.")
+
+    ev = m.get("energy_variability")
+    d["energy_variability"] = _descriptor(
+        _band(ev, c.energy_variability_low_db, c.energy_variability_high_db,
+              "even vocal energy",
+              "varied vocal energy", "highly varied vocal energy"),
+        ev, "dB SD",
+        "Microphone distance and automatic gain control can dominate this.")
+
+    hnr = m.get("hnr")
+    d["voice_signal"] = _descriptor(
+        _band(hnr, c.hnr_low_db, c.hnr_high_db,
+              "low clarity or noisy signal",
+              "moderate voiced-signal clarity", "clear voiced signal"),
+        hnr, "dB HNR",
+        "A recording-quality and voice-quality measure, not a competence cue.")
+
+    if "talk_time_ratio" in m:
+        ratio = m.get("talk_time_ratio")
+        d["floor_share"] = _descriptor(
+            _band(ratio, c.talk_ratio_low, c.talk_ratio_high,
+                  "candidate held less of the floor",
+                  "balanced floor share", "candidate held most of the floor"),
+            ratio, "candidate speech / total speech",
+            "Question design and interviewer behaviour drive this.")
+
+    if "response_latency" in m:
+        latency = m.get("response_latency")
+        d["response_gaps"] = _descriptor(
+            _band(latency, c.response_latency_low_s, c.response_latency_high_s,
+                  "short response gaps",
+                  "moderate response gaps", "longer response gaps"),
+            latency, "s",
+            "Network delay and question complexity can create long gaps.")
+
+    if "star_completeness" in m:
+        star = _numeric(m.get("star_completeness"))
+        if star is None:
+            label = "not measurable"
+        elif star >= c.star_complete_min:
+            label = "complete STAR structure"
+        elif star >= c.star_partial_min:
+            label = "partial STAR structure"
+        else:
+            label = "little STAR structure"
+        d["answer_structure"] = _descriptor(
+            label, star, "of 4",
+            "Content structure of this answer, not a trait of the person.")
+
+    if "specificity_score" in m:
+        spec = m.get("specificity_score")
+        d["concrete_detail"] = _descriptor(
+            _band(spec, c.specificity_low, c.specificity_high,
+                  "low concrete detail",
+                  "some concrete detail", "high concrete detail"),
+            spec, "0-1",
+            "Confidentiality and question type legitimately lower detail.")
+
+    if "quantification_rate" in m:
+        q = m.get("quantification_rate")
+        d["quantification"] = _descriptor(
+            _band(q, c.quantification_low, c.quantification_high,
+                  "few quantified claims",
+                  "some quantified claims", "many quantified claims"),
+            q, "share of claim-bearing sentences",
+            "A useful prompt for follow-up, not a hiring score.")
+
+    return out
 
 
 # ------------------------------------------------------------------ driver

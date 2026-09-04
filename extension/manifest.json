@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Interview signals — Meet companion",
+  "version": "0.1.0",
+  "description": "Brings the interview guide, CV-derived questions, answer scoring and the live read into a Google Meet call. Interviewer side only.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "action": { "default_popup": "popup.html" },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

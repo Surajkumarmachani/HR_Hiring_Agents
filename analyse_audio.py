@@ -4,10 +4,14 @@
     python3 analyse_audio.py subject.wav
     python3 analyse_audio.py subject.wav --interviewer interviewer.wav
     python3 analyse_audio.py session.mp4 --out out/audio.json
+    python3 analyse_audio.py subject.wav --delivery-profile
 
 Offline by design. The programme's recorded decision is separate tracks per
 participant rather than diarising a mixed recording, so the interaction
 measures need `--interviewer`; without it they are omitted rather than guessed.
+
+This CLI reports delivery descriptors, not emotion, personality, truthfulness
+or hireability. Those are not validly inferred from prosody in an interview.
 """
 
 import argparse
@@ -31,6 +35,35 @@ ORDER = [
 ]
 
 
+def print_delivery_profile(profile):
+    print("  Delivery profile")
+    print(f"    scope                 {profile['scope']}")
+    for name, desc in profile["descriptors"].items():
+        value = desc.get("value")
+        unit = desc.get("unit", "")
+        if isinstance(value, float):
+            shown = f"{desc['label']} ({value:.2f} {unit})".strip()
+        elif value is not None:
+            shown = f"{desc['label']} ({value} {unit})".strip()
+        else:
+            shown = desc["label"]
+        print(f"    {name:<21} {shown}")
+        if desc.get("evidence"):
+            ev = ", ".join(
+                f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}"
+                for k, v in desc["evidence"].items() if v is not None)
+            if ev:
+                print(f"      evidence: {ev}")
+        if desc.get("note"):
+            print(f"      note: {desc['note']}")
+    if profile.get("warnings"):
+        print("\n    warnings")
+        for w in profile["warnings"]:
+            print(f"      - {w}")
+    print("\n    not supported         emotion, personality, truthfulness, hireability")
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("audio", help="subject track (wav, or any media ffmpeg reads)")
@@ -39,6 +72,9 @@ def main():
     ap.add_argument("--out", default=None, help="write results as JSON")
     ap.add_argument("--transcribe", action="store_true",
                     help="transcribe locally and add Group E content measures")
+    ap.add_argument("--delivery-profile", action="store_true",
+                    help="summarise measurable delivery descriptors; not "
+                         "emotion/personality/truthfulness/hireability")
     ap.add_argument("--question", default=None,
                     help="the question asked, for answer_relevance")
     ap.add_argument("--config", default=None)
@@ -114,11 +150,21 @@ def main():
                                              else f"{v:>8.2f}") + "   per 100 words")
                 print("    NOTE: Whisper normalises disfluency away. These are a "
                       "lower bound only.\n")
-    else:
+
+    if not args.transcribe:
         print("  D4 disfluency and Group E omitted: pass --transcribe.\n")
+
+    profile = None
+    if args.delivery_profile:
+        profile = audio.delivery_profile(r)
+        print_delivery_profile(profile)
+    else:
+        print("  Delivery profile omitted: pass --delivery-profile.\n")
 
     if args.out:
         payload = {k: v for k, v in r.items()}
+        if profile is not None:
+            payload["delivery_profile"] = profile
         payload["config_digest"] = cfg.digest()
         with open(args.out, "w") as fh:
             json.dump(payload, fh, indent=2, sort_keys=True)

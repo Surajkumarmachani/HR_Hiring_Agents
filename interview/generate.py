@@ -639,15 +639,42 @@ it was aimed at. Score the answer in front of you, not the person who gave
 it and not their career.
 
   1-2   No answer, or nothing about the question that was asked.
-  3-4   A claim and nothing behind it. Names the technology, the outcome or
-        the decision, with no mechanism, no number and no trade-off.
-  5-6   Partly backed. One real detail or one concrete outcome, with the rest
-        asserted. A competent answer that stops at the surface.
-  7-8   Backed. Mechanism AND consequence: how it worked, what it cost, what
-        they traded away, what broke. Specific enough that only someone who
-        did the work could give it.
-  9-10  All of the above plus the boundary: where the approach fails, what
-        would have falsified it, what they would do differently and why.
+  3-4   A claim and nothing behind it.
+  5-6   Partly backed. One real specific, with the rest asserted. A competent
+        answer that stops at the surface.
+  7-8   Backed. The specifics that only somebody who was actually there could
+        give.
+  9-10  All of the above plus the boundary: where it breaks, what would have
+        changed their mind, what they would do differently and why.
+
+WHAT COUNTS AS "BACKED" DEPENDS ON THE COMPETENCY, AND THE ANCHORS SAY WHICH
+The bands above are the SCALE. The criteria come from the competency anchors
+given below the question -- written by the people who defined this role, and
+the same text the human rater scores against. Read the answer against those.
+
+  - For a TECHNICAL competency, backed means mechanism, a number, a trade-off,
+    a failure they diagnosed. How it worked and what it cost.
+  - For a BEHAVIOURAL competency, backed means what they actually did and
+    said, in what order, and what happened as a result -- a specific
+    situation, their own actions distinguished from the team's, an outcome.
+    Mechanisms and numbers are usually IRRELEVANT here, and their absence is
+    not a gap. "I asked what he was seeing and changed my design when his
+    read of the contention turned out to be right" contains no metric and is
+    strong evidence.
+  - For a COMMUNICATION competency, backed means the actual framing they used
+    with the actual audience, and how they knew it had landed. Not a
+    description of the technical constraint itself.
+
+Two failures follow from getting this wrong, and both are worse than a wrong
+number. Scoring a behavioural answer against a technical rubric marks a good
+answer down for lacking metrics it never needed. Scoring a technical answer
+against a behavioural one rewards a well-told story with nothing in it. If
+the anchors and these bands seem to disagree, the ANCHORS win.
+
+Nothing here is a psychometric instrument. This scores one answer's evidence
+against written anchors; it does not measure a trait, and no question in a
+guide validated by this project may ask it to -- see model.py's banned
+competencies.
 
 Anchor on EVIDENCE, not delivery. A hesitant answer full of specifics scores
 above a fluent answer full of claims. Do not reward confidence, vocabulary,
@@ -713,14 +740,65 @@ rather than reading meaning into noise.
 """
 
 
-def _assess_user_prompt(question, competencies, answer, band, max_n):
+def _anchor_block(guide, competency_ids):
+    """The competencies in play, with the guide's own written anchors.
+
+    WHY THE ANCHORS AND NOT JUST THE NAMES
+    --------------------------------------
+    The prompt used to say only "It elicits: technical_depth" -- a bare id --
+    and the scoring rules described one rubric: mechanism, a number, a
+    trade-off, an outcome. That is the right rubric for exactly one kind of
+    question, and this guide has five competencies of at least three kinds.
+
+    Judged against a technical rubric, a good behavioural answer scores badly.
+    "I asked what he was seeing, realised his read of the lock contention was
+    right, and changed the design" has no mechanism and no number in it; it
+    is a 4 on collaboration_under_disagreement, whose anchor at 4 is
+    "changed position on evidence at least once, or found a test that settled
+    it". The generic rubric would call it an unbacked claim.
+
+    So the anchors go in. They are hand-written per competency by the people
+    who defined the role, they already encode what depth means for each kind
+    of question -- technical, behavioural, communication -- and they are the
+    same text the human rater scores against. Passing anything else would be
+    inventing a second rubric that competes with the guide.
+
+    Note what this does NOT do: the anchor SCALE is 1-5 and the answer score
+    is out of 10, and no mapping between them is offered here or anywhere.
+    The anchors are given as a description of what good looks like for this
+    competency, not as a scale to place the candidate on. See _assess_schema.
+    """
+    if not competency_ids:
+        return ""
+    out = []
+    for cid in competency_ids:
+        c = guide.competency(cid)
+        if c is None:
+            continue
+        lines = [f"  {cid} -- {c.name}"]
+        for a in sorted(c.anchors, key=lambda x: x.score):
+            lines.append(f"      {a.score}: {a.description}")
+        out.append("\n".join(lines))
+    if not out:
+        return ""
+    return ("WHAT THIS QUESTION IS MEANT TO ELICIT, and what the people who "
+            "defined this role\nwrote down as depth for it. Judge the answer "
+            "against THESE, not against a\ngeneric idea of a good answer. A "
+            "behavioural competency is not evidenced by\nmechanisms and "
+            "numbers, and a technical one is not evidenced by tone.\n\n"
+            + "\n\n".join(out) + "\n\n")
+
+
+def _assess_user_prompt(question, competencies, answer, band, max_n,
+                        guide=None):
     b = BANDS[band]
     asked_block = (f"The interviewer asked:\n  {question}\n\n"
                    if question else
                    "The interviewer's question was not recorded; read the "
                    "answer on its own terms.\n\n")
-    comp_block = (f"It elicits: {', '.join(competencies)}\n\n"
-                  if competencies else "")
+    comp_block = (_anchor_block(guide, competencies) if guide is not None
+                  else (f"It elicits: {', '.join(competencies)}\n\n"
+                        if competencies else ""))
     return (
         f"{asked_block}{comp_block}"
         f"DIFFICULTY BAND: {b['label']} -- {b['brief']}\n{b['guidance']}\n\n"
@@ -729,8 +807,12 @@ def _assess_user_prompt(question, competencies, answer, band, max_n):
         f"not this candidate's.\n\n"
         f"Put the single most useful counter-question first: the one the "
         f"interviewer should ask if they ask only one.\n\n"
-        f"Write at most {max_n} counter-questions, or none if the answer "
-        f"already holds up.\n\n"
+        f"Write {max_n} counter-questions where the answer gives you {max_n} "
+        f"distinct things worth testing -- a different claim, gap or "
+        f"inconsistency each. Do not pad: two questions that press the same "
+        f"point are one question. Return fewer, or none at all, when the "
+        f"answer genuinely holds up; a short list is a finding about the "
+        f"answer and the interviewer reads it as one.\n\n"
         f"WHAT THE CANDIDATE SAID, transcribed live\n{'=' * 41}\n{answer}")
 
 
@@ -1443,7 +1525,7 @@ def assess_answer(question, answer_text, guide, band, cfg=None):
     t0 = time.time()
     data, prov = generate_json(
         _guide_context(guide) + "\n\n" + ASSESS_RULES,
-        _assess_user_prompt(qtext, comps, answer, band, max_n),
+        _assess_user_prompt(qtext, comps, answer, band, max_n, guide),
         _assess_schema(max_n), fast, thinking=cfg.assess_thinking)
 
     raw_read = data.get("read") or {}

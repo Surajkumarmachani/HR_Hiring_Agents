@@ -550,6 +550,43 @@ class TranscriptBuilder:
         self.lines.append(line)
         return {"op": "new", "line": line}
 
+    def add_external(self, speaker, text, t, source="captions",
+                     confidence=None):
+        """Append a line that was formed somewhere else. Returns the op dict.
+
+        FOR TRANSCRIPTS THIS SERVER DID NOT PRODUCE
+        -------------------------------------------
+        Meet's own captions, relayed by the interviewer's extension. They
+        arrive as finished text with a speaker's name on them and no word
+        timings, so none of the machinery above applies: there is no silence
+        to measure, no chunk boundary to disregard, and the decision about
+        where the line ended was already taken by whoever produced it.
+
+        Forcing them through `add()` would mean inventing word timings to
+        satisfy a pause test, which is fabricating the evidence the test
+        exists to read. So they are appended as they came, and marked.
+
+        `source` is on every line for a reason that matters downstream. A
+        caption line is not the same measurement as a locally-transcribed
+        one: it came from a third party's recogniser at whatever quality
+        their model and the call's audio allowed, it carries no confidence
+        figure, and it cannot be re-transcribed later because the audio was
+        never here. `signals/text.py` reads `min_asr_confidence`; a line with
+        no confidence at all must be distinguishable from a confident one
+        rather than defaulting into it.
+        """
+        text = (text or "").strip()
+        if not text:
+            return None
+        line = {"id": self._next_id, "speaker": speaker,
+                "t": round(max(float(t or 0.0), 0.0), 1),
+                "t_end": round(max(float(t or 0.0), 0.0), 1),
+                "text": text, "confidence": confidence, "continued": False,
+                "boundary_end": False, "source": source}
+        self._next_id += 1
+        self.lines.append(line)
+        return {"op": "new", "line": line}
+
     def _extend(self, line, t_end, text, conf, boundary_end=False):
         line["text"] = (line["text"] + " " + text.strip()).strip()
         line["t_end"] = round(max(t_end, line["t"]), 1)

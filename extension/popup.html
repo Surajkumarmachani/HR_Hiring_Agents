@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8">
+<title>Interview signals</title>
+<style>
+  body { font: 13px/1.5 system-ui, sans-serif; width: 300px; margin: 0;
+         padding: 14px; background: #0c1218; color: #cbd9e1; }
+  h1 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase;
+       color: #a78bfa; margin: 0 0 10px; }
+  label { display: block; margin: 10px 0 4px; color: #6b8391; font-size: 11px;
+          letter-spacing: .05em; text-transform: uppercase; }
+  input { width: 100%; box-sizing: border-box; padding: 7px 8px;
+          background: #070b0f; color: #cbd9e1; border: 1px solid #1b2a33;
+          border-radius: 4px; font: inherit; }
+  button { margin-top: 12px; width: 100%; padding: 8px; border-radius: 4px;
+           border: 1px solid #22d3ee; background: #22d3ee; color: #04202a;
+           font: inherit; font-weight: 600; cursor: pointer; }
+  p { color: #6b8391; font-size: 11.5px; }
+</style>
+<h1>Meet companion</h1>
+<label for="server">Server</label>
+<input id="server" placeholder="http://127.0.0.1:8000">
+<label for="link">Your interviewer link</label>
+<input id="link" placeholder="http://127.0.0.1:8000/i/2026…/alice?t=…">
+<label for="myname">Your display name in Meet</label>
+<input id="myname" placeholder="Alice Kumar">
+<button id="save">Save</button>
+<p>Paste the interviewer link the scheduler gave you, and your own Meet
+   display name — that is how a caption line is told apart from the
+   candidate’s. Turn Meet captions on in the call.</p>
+<p>The candidate must still complete their own consent link. Nothing is
+   measured or transcribed without it.</p>
+<script src="popup.js"></script>

@@ -65,11 +65,12 @@ import os
 import re
 import secrets
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 from fastapi import (FastAPI, HTTPException, Request, UploadFile, File,
                      Form, WebSocket, WebSocketDisconnect)
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import consent as consent_mod
@@ -84,6 +85,7 @@ from interview.generate import (BANDS, GenerationDisabled, GenerationError,
                                 interview_from_resume, next_question,
                                 probes_from_resume)  # noqa: F401
 from interview.model import Guide, GuideError
+from interview.turns import question_boundaries
 from web.live import HUB
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -160,6 +162,12 @@ class Session:
         # answer would spend a request re-scoring words already scored, and
         # the panel would watch the number wobble on unchanged speech.
         self._assess_watermark = {}
+        # Transcript position at which the current answer begins: set when a
+        # question is put on the table. None until then, which
+        # answer_since_question treats as "no question asked in this process"
+        # rather than as position zero -- position zero would read the whole
+        # transcript back as one answer.
+        self.answer_from = None
         self.resume_path = None
         self.resume_text = None
         self.resume_meta = None
@@ -284,32 +292,158 @@ def check_interviewer(s, who, token):
 NO_STORE = {"cache-control": "no-store, must-revalidate", "pragma": "no-cache"}
 
 
+_ASSET_HREF = re.compile(r'(href|src)="(/static/[^"?]+)"')
+
+
+def page(name):
+    """Serve an HTML page with its stylesheet links cache-busted.
+
+    WHY THE PAGES ARE REWRITTEN RATHER THAN SENT AS FILES
+    -----------------------------------------------------
+    The HTML has always been no-store, so a reload got the current markup and
+    the current inline script. `/static` was not, so the browser kept the
+    stylesheet -- and the two together produce the most misleading bug shape
+    available: current JavaScript running against a previous stylesheet.
+
+    Concretely, it cost two rounds on the captions toggle. New markup and new
+    handlers were being served; the CSS that gave the button its on and off
+    appearance was months-stale by browser reckoning, so both states painted
+    identically and the control looked DEAD rather than unstyled. Clicking it
+    worked perfectly and changed nothing anyone could see.
+
+    Adding no-store to /static fixes it, and only after a restart -- which is
+    exactly the moment somebody is staring at an unchanged page wondering
+    whether the edit landed. So the query string is stamped from the asset's
+    own mtime as well: touch a stylesheet and the next page load asks for a
+    URL the browser has never seen, whatever it decided to cache.
+    """
+    path = os.path.join(STATIC, name)
+    with open(path, encoding="utf-8") as fh:
+        html = fh.read()
+
+    def stamp(m):
+        attr, url = m.group(1), m.group(2)
+        # "/static/hud.css" lives at STATIC/hud.css, not ROOT/static/hud.css.
+        # The first version joined against ROOT, getmtime raised OSError, and
+        # this returned the URL unstamped -- silently, which is the worst
+        # possible failure for a cache-buster: it looks installed and busts
+        # nothing. Hence the assertion in the test, not just the code.
+        rel = url[len("/static/"):]
+        try:
+            v = int(os.path.getmtime(os.path.join(STATIC, rel)))
+        except OSError:
+            return m.group(0)
+        return f'{attr}="{url}?v={v}"'
+
+    return HTMLResponse(_ASSET_HREF.sub(stamp, html), headers=NO_STORE)
+
+
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(STATIC, "index.html"), headers=NO_STORE)
+    return page("index.html")
 
 
 @app.get("/i/{sid}/{who}")
 def interviewer_page(sid: str, who: str):
-    return FileResponse(os.path.join(STATIC, "interviewer.html"),
-                        headers=NO_STORE)
+    return page("interviewer.html")
 
 
 @app.get("/c/{sid}")
 def candidate_page(sid: str):
-    return FileResponse(os.path.join(STATIC, "candidate.html"),
-                        headers=NO_STORE)
+    return page("candidate.html")
+
+
+GUIDES_DIR = os.path.join(ROOT, "guides")
+
+
+def resolve_guide(guide_path):
+    """Load a guide by path, refusing anything outside guides/.
+
+    WHY THIS IS NOT os.path.join
+    ----------------------------
+    It was. `os.path.join(ROOT, body.get("guide"))` takes a string straight
+    from a request body, and os.path.join has a rule that surprises people:
+    an ABSOLUTE second argument discards the first entirely, so
+    join(ROOT, "/etc/passwd") is "/etc/passwd". Relative traversal works too.
+    The endpoint is unauthenticated by design -- it is how an interview gets
+    created -- and DEPLOY.md describes putting it on a public URL.
+
+    Nothing dramatic was reachable: Guide.load parses JSON and validate()
+    rejects anything that is not a guide. But the DIFFERENCE between "no such
+    file" and "not a valid guide" is a file-existence oracle over the whole
+    filesystem, and error text carrying a parse failure discloses fragments of
+    whatever it read. Neither belongs on a public endpoint.
+
+    So: resolve both sides and require the result to sit under guides/. Paths
+    are also accepted without the "guides/" prefix, because that is what
+    somebody types.
+    """
+    name = (guide_path or "").strip()
+    if not name:
+        raise HTTPException(400, "a guide is required")
+    candidate = name if os.path.isabs(name) else os.path.join(ROOT, name)
+    full = os.path.realpath(candidate)
+    if not full.startswith(os.path.realpath(GUIDES_DIR) + os.sep):
+        # Try it as a bare filename before refusing: "data-scientist.json".
+        full = os.path.realpath(os.path.join(GUIDES_DIR, os.path.basename(name)))
+        if not full.startswith(os.path.realpath(GUIDES_DIR) + os.sep):
+            raise HTTPException(400, "guide must be a file under guides/")
+    try:
+        return Guide.load(full)
+    except FileNotFoundError:
+        raise HTTPException(
+            400, f"no guide named {os.path.basename(name)!r} in guides/. "
+                 f"GET /api/guides lists what is there.")
+    except GuideError as e:
+        raise HTTPException(400, f"guide rejected: {e}")
+
+
+@app.get("/api/guides")
+def list_guides():
+    """Every usable guide on this machine.
+
+    Exists so the scheduling form does not have to hardcode one filename.
+    A role is not a fixed parameter of this product -- a data-science or
+    ML interview is a different guide with different competencies, and the
+    engine has always supported that; nothing surfaced it.
+
+    Guides that fail validate() are listed with their error rather than
+    hidden. A guide dropped in the folder and silently absent from the list is
+    a confusing ten minutes; one listed as broken, with the reason, is a fix.
+    """
+    out = []
+    if os.path.isdir(GUIDES_DIR):
+        for name in sorted(os.listdir(GUIDES_DIR)):
+            if not name.endswith(".json"):
+                continue
+            path = os.path.join(GUIDES_DIR, name)
+            entry = {"path": f"guides/{name}", "file": name}
+            try:
+                g = Guide.load(path)
+                entry.update(id=g.id, role=g.role, version=g.version,
+                             competencies=len(g.competencies),
+                             questions=len(g.questions),
+                             digest=g.digest(), usable=True)
+            except Exception as e:
+                # Deliberately broad. A guide is a hand-edited file on disk,
+                # and the ways it can be wrong are open-ended: GuideError from
+                # validate(), JSONDecodeError from a trailing comma, KeyError
+                # from a missing "version", TypeError from a list where an
+                # object belongs. Catching a named few meant ONE bad file in
+                # the folder returned 500 for the whole endpoint, which empties
+                # the dropdown and makes every guide unreachable -- the exact
+                # opposite of listing the broken one with its reason.
+                entry.update(usable=False,
+                             error=f"{type(e).__name__}: {e}")
+            out.append(entry)
+    return {"guides": out}
 
 
 # ------------------------------------------------------------------- api
 @app.post("/api/sessions")
 async def create_session(request: Request):
     body = await request.json()
-    guide_path = body.get("guide") or "guides/software-engineer.json"
-    try:
-        guide = Guide.load(os.path.join(ROOT, guide_path))
-    except (GuideError, FileNotFoundError) as e:
-        raise HTTPException(400, f"guide rejected: {e}")
+    guide = resolve_guide(body.get("guide"))
 
     panel = [_slug(p) for p in body.get("panel") or []]
     if not panel:
@@ -728,6 +862,94 @@ def _interviewer(s, who, token):
 GENERATION_SIGNAL = "resume_question_generation"
 
 
+def start_new_answer(sid, s):
+    """A question has just been put to the candidate. THE ANSWER STARTS HERE.
+
+    THE RULE THIS ENCODES
+    ---------------------
+    One question, one answer, one read. The interviewer asks; the candidate
+    replies; that reply -- and only that reply -- is what gets scored and what
+    the counter-questions are aimed at. Then the next question is asked and
+    the cycle repeats, per question, for the whole interview. Nothing from
+    before the question is part of the answer to it.
+
+    That has to be recorded rather than inferred, because the obvious
+    inference is wrong. Reading "the last few candidate lines" looks
+    equivalent and is not: on a real session the question went on the table
+    at 60:35 while the candidate's most recent speech was from 43:02, so
+    every answer was scored against seventeen minutes of unrelated talk and
+    every answer came back 1/10. The model was describing the text it was
+    given accurately; the text was the wrong text.
+
+    Called from BOTH paths that put a question to a candidate -- pressing
+    "Ask this" on a generated question, and recording a question the
+    interviewer asked off their own bat. The second one was missed at first,
+    which meant an answer to your own question was read together with the
+    previous answer. Hence one function rather than two assignments.
+    """
+    builder = HUB.builders.get(sid)
+    s.answer_from = len(builder.lines) if builder else 0
+    return s.answer_from
+
+
+def answer_since_question(sid, s, max_lines=12):
+    """What the candidate has said SINCE the question was put to them.
+
+    Returns (text, reason). `reason` is non-None when there is no answer yet,
+    and is the sentence the interviewer sees -- an honest "they have not
+    answered" beats a confident 1/10 read off the wrong passage.
+
+    Windowed by transcript position rather than by clock time, because the
+    positions come from the same list the lines do and cannot drift from it.
+    `max_lines` caps a very long answer; it does not reach back before the
+    question.
+    """
+    builder = HUB.builders.get(sid)
+    lines = builder.lines if builder else []
+    if not lines:
+        return "", "nothing has been transcribed yet."
+
+    # TWO SIGNALS FOR WHERE THE ANSWER BEGINS, AND THE LATER ONE WINS.
+    #
+    # The button is one: pressing "Ask this" records the position. But an
+    # interviewer mid-conversation does not always press it, and they should
+    # not have to -- anything they SAY is a question, and anything the
+    # candidate says after it is the answer. When the interviewer's own mic is
+    # shared their turns are in this same transcript, so the boundary is
+    # already there to be read.
+    #
+    # Both are used because neither is sufficient. The mic may be off, in
+    # which case only the button exists. And an interviewer may ask three
+    # follow-ups aloud after pressing once, in which case the button is stale
+    # and their speech is current. Taking the later of the two is right under
+    # both, and needs no guess about which mode the room is in.
+    # Which interviewer turns were questions is a judgement, and
+    # interview/turns.py makes it on structure rather than on length. A
+    # length rule was tried first and it failed both ways on a real
+    # transcript: it threw away "What exact grant?" at seventeen characters
+    # and accepted a hundred-character preamble that asked nothing.
+    bounds = question_boundaries(lines)
+    spoken_at = bounds[-1] if bounds else None
+
+    marked = getattr(s, "answer_from", None)
+    if marked is None and spoken_at is None:
+        window = [l for l in lines if l.get("speaker") == "candidate"]
+        if not window:
+            return "", "the candidate has not said anything yet."
+        # No question is recorded by either route. Read recent speech rather
+        # than refusing, and say that the window is an assumption.
+        return " ".join(l["text"] for l in window[-max_lines:]), None
+
+    start = max(marked or 0, spoken_at or 0)
+    said = [l["text"] for l in lines[start:]
+            if l.get("speaker") == "candidate" and l.get("text")]
+    if not said:
+        return "", ("the candidate has not said anything since that question "
+                    "was put to them. Anything earlier in the transcript is a "
+                    "different answer, so there is nothing to read yet.")
+    return " ".join(said[-max_lines:]), None
+
+
 def _egress_permitted(s):
     """Refuse unless the candidate agreed to their data leaving this machine.
 
@@ -955,6 +1177,26 @@ async def suggest_next(sid: str, request: Request):
     transcript = body.get("transcript") or " ".join(
         l["text"] for l in cand_lines[-10:])
 
+    # NOTHING IS SUGGESTED BEFORE A QUESTION HAS BEEN ASKED.
+    #
+    # The guard below this one is a character count, and casual opening
+    # chat clears it: "hello, can you hear me, yes I can see you" is 140
+    # characters. The model was then handed that as "the answer", correctly
+    # observed it was not one, and produced an opening question -- which
+    # looks like the system telling an interviewer how to start their own
+    # interview, before the candidate has said anything worth responding to.
+    #
+    # A suggestion is a RESPONSE. It only means something after a question
+    # has been put to the candidate and they have answered it. So the gate is
+    # the asked list, not a word count: no question asked, no suggestion, and
+    # no request spent finding that out.
+    if not s.interview.asked:
+        return {"ok": True, "suggestion": None, "waiting": True,
+                "reason": ("no question has been asked yet. Put one on the "
+                           "table first -- a suggestion responds to an "
+                           "answer, and there is no answer until there is a "
+                           "question.")}
+
     if not cand_lines:
         return {"ok": True, "suggestion": None, "waiting": True,
                 "reason": ("the candidate has not said anything yet. Ask a "
@@ -1011,6 +1253,7 @@ async def mark_asked(sid: str, request: Request):
         asked = s.interview.mark_asked(body.get("question_id"))
     except InterviewError as e:
         raise HTTPException(422, str(e))
+    start_new_answer(sid, s)          # see its docstring for the rule
     s.interview.save()
     return {"ok": True, "asked": asked, "coverage": s.interview.coverage()}
 
@@ -1039,10 +1282,10 @@ async def suggest_followups(sid: str, request: Request):
     # holds. Nothing new is captured to do this.
     answer = body.get("answer")
     if not answer:
-        builder = HUB.builders.get(sid)
-        lines = [l["text"] for l in (builder.lines if builder else [])
-                 if l["speaker"] == "candidate"]
-        answer = " ".join(lines[-6:])
+        answer, reason = answer_since_question(sid, s)
+        if reason:
+            return {"ok": True, "followups": [], "waiting": True,
+                    "reason": reason}
 
     try:
         items, meta = await asyncio.to_thread(
@@ -1123,14 +1366,15 @@ async def assess(sid: str, request: Request):
     # them in produced reads of the panel talking to itself.
     answer = body.get("answer")
     if not answer:
-        builder = HUB.builders.get(sid)
-        lines = [l["text"] for l in (builder.lines if builder else [])
-                 if l.get("speaker") == "candidate"]
-        if not lines:
+        # SINCE the question, not simply the most recent speech. See
+        # answer_since_question: reading the last few candidate lines
+        # whenever they were said made every answer score 1/10, because on a
+        # real session the newest candidate speech predated the question by
+        # seventeen minutes.
+        answer, reason = answer_since_question(sid, s)
+        if reason:
             return {"ok": True, "assessment": None, "waiting": True,
-                    "reason": ("the candidate has not said anything yet. "
-                               "There is no answer to read.")}
-        answer = " ".join(lines[-8:])
+                    "reason": reason}
 
     # Auto-fired scoring re-asks on every detected pause, so unchanged
     # speech must not spend a request. Keyed per question: moving to the next
@@ -1193,6 +1437,10 @@ async def own_question(sid: str, request: Request):
         raise HTTPException(422, str(e))
     except GuideError as e:
         raise HTTPException(422, str(e))
+    # Your own question is still a question put to the candidate, so the
+    # answer to it starts here too. Missing this scored their reply to your
+    # question together with their reply to the previous one.
+    start_new_answer(sid, s)
     s.interview.save()
     return {"ok": True, "question": entry,
             "coverage": s.interview.coverage()}
@@ -1379,6 +1627,256 @@ async def capture_state(sid, on):
     if not on:
         HUB.latest.pop(sid, None)
     await HUB.broadcast(sid, measures=msg)
+
+
+@app.post("/api/sessions/{sid}/relay/transcript")
+async def relay_transcript(sid: str, request: Request):
+    """Speaker-attributed caption lines, relayed from a third-party call.
+
+    WHY CAPTIONS AND NOT THE AUDIO
+    ------------------------------
+    Three routes exist for getting the candidate's words out of a Meet call
+    and only one of them keeps a decision this project already made.
+
+    Capturing the tab's audio gives better text -- it would go through the
+    same faster-whisper the direct path uses -- but it gives ONE MIXED TRACK.
+    Splitting it back into speakers is diarisation, which `web/live.py` calls
+    a research problem and avoids by taking a separate track per participant.
+    Routing Meet through here would reintroduce it as a dependency, and the
+    answer-window rule -- anything the interviewer says is a question,
+    anything the candidate says is the answer -- would then rest on a guess
+    about who spoke.
+
+    Meet's own captions are already attributed: Google's recogniser has the
+    per-participant streams and labels them. So the attribution arrives
+    correct by construction, exactly as it does on the direct path, for a
+    completely different reason.
+
+    WHAT IS GIVEN UP
+    ---------------
+    Quality and confidence. These lines come from a recogniser this project
+    does not control, at whatever the call's audio allowed, with no
+    per-word confidence. `add_external` marks every one `source: "captions"`
+    so nothing downstream reads them as equivalent to a local transcription.
+    The answer score is only as good as the text under it, and on this path
+    the text is somebody else's.
+
+    CONSENT
+    -------
+    Gated on the candidate's `audio_transcript`, the same signal the direct
+    path needs. Captions being visible to everyone in the call is not
+    consent to record and process them -- a person can accept that their
+    words are shown live and still refuse to have them stored and read by a
+    model, which is precisely the choice the consent screen offers.
+    """
+    s = get_session(sid)
+    body = await request.json()
+    who = _slug(body.get("who"))
+    _interviewer(s, who, body.get("t"))
+
+    if not s.consent:
+        raise HTTPException(409, "the candidate has not consented yet.")
+    if "audio_transcript" not in (s.consent.get("signals") or []):
+        raise HTTPException(
+            403, "this candidate did not consent to a transcript, so their "
+                 "words are not recorded -- from the call either. Their "
+                 "interview is unaffected.")
+
+    builder = HUB.builder(sid)
+    started = getattr(s, "relay_t0", None)
+    if started is None:
+        started = s.relay_t0 = time.time()
+
+    added = []
+    for item in (body.get("lines") or [])[:40]:
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+        # The extension says who spoke, in the call's own terms, and maps it
+        # to a role before sending. It is validated here rather than trusted:
+        # a line attributed to the wrong side would put the candidate's answer
+        # on the interviewer's ledger and vice versa, and the answer window
+        # is built on that distinction.
+        speaker = "candidate" if item.get("speaker") == "candidate" else who
+        op = builder.add_external(
+            speaker, text,
+            item.get("t", round(time.time() - started, 1)))
+        if op:
+            added.append(op["line"])
+            await HUB.broadcast(sid, measures={"line": op["line"],
+                                               "op": op["op"]})
+    return {"ok": True, "added": len(added),
+            "lines": len(builder.lines)}
+
+
+@app.websocket("/ws/meet/{sid}/{who}")
+async def ws_meet_relay(ws: WebSocket, sid: str, who: str, t: str = ""):
+    """Frames of the candidate, captured from a third-party call by the
+    interviewer's browser extension.
+
+    WHY THIS IS NOT /ws/candidate WITH A DIFFERENT CALLER
+    -----------------------------------------------------
+    Three things differ, and all three have to be recorded rather than
+    assumed away.
+
+    WHO IS AUTHENTICATED. These frames arrive from the interviewer's machine,
+    so they are gated on the interviewer's token. Handing an interviewer the
+    candidate's token so they could post to /ws/candidate would let them
+    impersonate the candidate on every candidate-facing endpoint, which is a
+    much larger hole than this socket is worth.
+
+    WHOSE CONSENT GOVERNS. The candidate's, unchanged. The interviewer being
+    the one holding the camera changes nothing about whose face it is: the
+    same per-signal record is required and the same signals are refused. A
+    call on another platform is a different TRANSPORT, not a different legal
+    basis, and it is emphatically not a way around the consent screen.
+
+    WHAT THE MEASUREMENT IS WORTH. Less, and by an amount nobody can
+    currently quantify. A video-conference stream is bandwidth-adaptive:
+    frame rate, resolution and bitrate all fall when a connection is poor,
+    which is exactly what the recorded transport decision at the top of this
+    module refuses for the direct path -- "every signal this project measures
+    would then become partly a function of the candidate's internet". Add the
+    compositor: the frames here are re-encoded by the call platform, scaled
+    to whatever tile size its layout chose, and sampled off a canvas at
+    whatever rate the interviewer's laptop manages while it is also decoding
+    video and running a meeting.
+
+    So the frames are measured -- the pixels are real and the ROI selector
+    does not care where they came from -- and every snapshot is stamped
+    `source: "relay"` with the achieved sample rate beside it, and the pulse
+    is WITHHELD rather than shown when the capture cannot support one. See
+    `relay_quality`. An interviewer who is shown a number has to be able to
+    tell whether it measured a person or a network, and on this path the
+    honest answer is often the latter.
+    """
+    s = SESSIONS.get(sid)
+    if not s or who not in s.interviewer_tokens or \
+            not secrets.compare_digest(s.interviewer_tokens[who], t or ""):
+        await ws.close(code=4403)
+        return
+    if not s.consent:
+        await ws.accept()
+        await ws.send_json({
+            "error": "no consent recorded",
+            "reason": "the candidate has not completed the consent step. "
+                      "Send them their link; measuring from a call does not "
+                      "replace it."})
+        await ws.close(code=4403)
+        return
+
+    consented = set(s.consent.get("signals") or [])
+    video_signals = {"video_facial_features", "upper_body_pose",
+                     "pulse_rate_rppg"}
+    if not (consented & video_signals):
+        await ws.accept()
+        await ws.send_json({
+            "error": "no video measurement consented",
+            "reason": "the candidate declined every video measurement. "
+                      "Nothing is measured from the call either."})
+        await ws.close(code=4403)
+        return
+
+    await ws.accept()
+    analyzer = HUB.analyzer(sid, identify=s.identify_candidate,
+                            signals=consented)
+    await capture_state(sid, True)
+
+    # Arrival times, to report the rate actually achieved rather than the one
+    # the extension was aiming for. The extension cannot know it: the browser
+    # throttles a background tab, the compositor drops, the laptop is busy.
+    arrivals = deque(maxlen=90)
+    newest = {"frame": None, "seq": 0}
+    done = asyncio.Event()
+
+    async def worker():
+        seen = 0
+        while not done.is_set():
+            if newest["seq"] == seen or newest["frame"] is None:
+                await asyncio.sleep(0.005)
+                continue
+            seen = newest["seq"]
+            try:
+                snap = await asyncio.to_thread(analyzer.process,
+                                               newest["frame"])
+            except Exception as e:
+                snap = {"error": f"{type(e).__name__}: {e}"}
+            if snap:
+                snap["frames_skipped"] = max(0, newest["seq"] - seen)
+                snap.update(relay_quality(arrivals))
+                HUB.latest[sid] = snap
+                await HUB.broadcast(sid, measures=snap)
+
+    task = asyncio.create_task(worker())
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            if msg.get("text") is not None:
+                await candidate_control(sid, analyzer, msg["text"])
+                continue
+            frame = msg.get("bytes")
+            if not frame:
+                continue
+            arrivals.append(time.time())
+            await HUB.broadcast(sid, frame=frame)
+            newest["frame"] = frame
+            newest["seq"] += 1
+    except WebSocketDisconnect:
+        pass
+    finally:
+        done.set()
+        task.cancel()
+        a = HUB.analyzers.get(sid)
+        if a:
+            a.capture_stopped()
+        HUB.drop(sid)
+        await HUB.broadcast(sid, measures={
+            "type": "capture", "camera": False,
+            "reason": "the relay from the call has stopped"})
+
+
+# Sample rate below which a pulse estimate is not asserted from relayed
+# frames. The rPPG window is 10 s and the search band tops out at 3 Hz, so
+# Nyquist alone needs 6 fps -- but POS is recovering a signal three orders of
+# magnitude below the noise by coherent integration, and it needs the samples
+# to be REGULAR as much as frequent. `effective_fps` rescales the spectrum by
+# the rate samples actually arrived at, which corrects a steady shortfall and
+# cannot correct jitter.
+#
+# 8 fps is a floor rather than a calibrated threshold, and it is documented as
+# one: below it the estimate is refused outright, above it the achieved rate
+# travels with the number so the panel can show what it was measured under.
+# WP8b replaces this with a figure from data.
+RELAY_MIN_FPS = 8.0
+
+
+def relay_quality(arrivals):
+    """What the relay achieved, so a number is never read without it.
+
+    Returned on every snapshot from the relay path. `pulse_ok` False means
+    the capture cannot support a pulse estimate, and the panel withholds it
+    -- the same posture as a greyed-out tile reading "insufficient signal",
+    which the README calls a feature rather than a failure.
+    """
+    if len(arrivals) < 8:
+        return {"source": "relay", "relay_fps": None, "pulse_ok": False,
+                "relay_note": "not enough frames yet to know the rate"}
+    span = arrivals[-1] - arrivals[0]
+    fps = (len(arrivals) - 1) / span if span > 0 else 0.0
+    gaps = [arrivals[i + 1] - arrivals[i] for i in range(len(arrivals) - 1)]
+    mean = sum(gaps) / len(gaps) if gaps else 0.0
+    jitter = ((sum((g - mean) ** 2 for g in gaps) / len(gaps)) ** 0.5
+              if gaps else 0.0)
+    ok = fps >= RELAY_MIN_FPS
+    note = None if ok else (
+        f"{fps:.1f} fps from the call, below the {RELAY_MIN_FPS:.0f} fps "
+        f"floor. Pulse is not estimated: at this rate the number would be "
+        f"about the connection rather than the candidate.")
+    return {"source": "relay", "relay_fps": round(fps, 1),
+            "relay_jitter_ms": round(jitter * 1000, 1),
+            "pulse_ok": bool(ok), "relay_note": note}
 
 
 @app.websocket("/ws/audio/{sid}")
@@ -1603,4 +2101,31 @@ async def ws_interviewer(ws: WebSocket, sid: str, who: str, t: str = ""):
         HUB.watchers[sid].discard(ws)
 
 
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+class NoStoreStatic(StaticFiles):
+    """Static files, never cached.
+
+    The HTML pages already send no-store; /static did not, so a browser held
+    on to hud.css and interviewer.html's stylesheet while happily re-fetching
+    the page that links them. The visible result is edits that appear to have
+    done nothing -- a CSS change to the captions toggle looked like a bug in
+    the CSS for two rounds, because the browser was still rendering the
+    previous file.
+
+    These assets are a few tens of kilobytes served from the same process
+    that is holding a video call open, so caching them buys nothing worth
+    that class of confusion. If this ever fronts a CDN, put a content hash in
+    the filename instead of relaxing this.
+    """
+
+    def is_not_modified(self, response_headers, request_headers):
+        # Refuse to answer 304 as well: an ETag match would otherwise let the
+        # browser keep serving what it already has.
+        return False
+
+    async def get_response(self, path, scope):
+        r = await super().get_response(path, scope)
+        r.headers.update(NO_STORE)
+        return r
+
+
+app.mount("/static", NoStoreStatic(directory=STATIC), name="static")

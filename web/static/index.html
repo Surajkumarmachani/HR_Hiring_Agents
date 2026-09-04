@@ -22,8 +22,9 @@
     <label for="panel">Panel (comma separated)</label>
     <input id="panel" type="text" placeholder="alice, bob, carol" value="alice, bob">
 
-    <label for="guide">Guide</label>
-    <input id="guide" type="text" value="guides/software-engineer.json">
+    <label for="guidePick">Guide</label>
+    <select id="guidePick"></select>
+    <p class="hint" id="guideHint"></p>
 
     <label for="when">Date and time</label>
     <input id="when" type="datetime-local">
@@ -61,6 +62,61 @@
 <script>
 const $ = s => document.querySelector(s);
 
+// The guide is the ROLE. It was a text box with one filename baked into it,
+// which made a backend-engineer interview look like the only kind this
+// product runs -- the engine never assumed that, the form did.
+//
+// A dropdown and NOTHING ELSE. It briefly also offered "type a path", which
+// sounds more flexible and is not: the only paths that work are the ones
+// already in the list, so the free text could express exactly one thing the
+// dropdown could not -- a mistake. Typing "Software" produced a server error
+// after the form had been filled in. Every valid choice is on this list, so
+// the list is the whole interface.
+async function loadGuides() {
+  const pick = $("#guidePick"), hint = $("#guideHint");
+  let guides = [];
+  try {
+    guides = (await (await fetch("/api/guides")).json()).guides || [];
+  } catch (e) {
+    hint.textContent = "Could not reach the server to list guides.";
+    return;
+  }
+
+  const usable = guides.filter(g => g.usable);
+  pick.innerHTML = "";
+  for (const g of guides) {
+    const o = document.createElement("option");
+    o.value = g.path;
+    o.textContent = g.usable
+      ? `${g.role} — ${g.competencies} competencies, ${g.questions} questions`
+      : `${g.file} — unusable, see the hint below`;
+    o.disabled = !g.usable;
+    pick.appendChild(o);
+  }
+
+  const sync = () => {
+    const g = guides.find(x => x.path === pick.value);
+    hint.textContent = !g ? ""
+      : g.usable ? `${g.path} · guide ${g.id} v${g.version} · digest ${g.digest}`
+      : `${g.path} cannot be used: ${g.error}`;
+  };
+  pick.onchange = sync;
+
+  if (!guides.length) {
+    // An empty dropdown with a live Create button is a form that can only
+    // fail. Say what is wrong and where to fix it.
+    pick.innerHTML = '<option value="">no guides found</option>';
+    pick.disabled = true;
+    $("#go").disabled = true;
+    hint.textContent = "No guides in guides/. Add a guide file there and "
+                     + "reload — one JSON file per role.";
+    return;
+  }
+  if (usable.length) pick.value = usable[0].path;
+  sync();
+}
+loadGuides();
+
 function withOffset(local) {
   const d = new Date(local);
   const off = -d.getTimezoneOffset();
@@ -88,7 +144,7 @@ $("#go").onclick = async () => {
     candidate_name: $("#cname").value.trim(),
     organisation: $("#org").value.trim(),
     panel: $("#panel").value.split(",").map(s => s.trim()).filter(Boolean),
-    guide: $("#guide").value.trim(),
+    guide: $("#guidePick").value,
     identify_candidate: $("#ident").checked,
     // Sent with the browser's offset, so the server stores a real instant
     // rather than a wall-clock time that means something else to a candidate

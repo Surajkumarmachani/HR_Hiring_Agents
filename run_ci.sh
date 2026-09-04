@@ -19,6 +19,7 @@ echo "== capture gaps =="     && python3 tests/test_capture_gap.py
 echo "== generated probes ==" && python3 tests/test_generate.py
 echo "== consent enforcement ==" && python3 tests/test_consent_enforcement.py
 echo "== accuracy apparatus ==" && python3 tests/test_rppg_tuning.py
+echo "== answer cycle ==" && python3 tests/test_answer_cycle.py
 echo "== end-to-end selftest ==" && python3 run_live.py --selftest
 echo "== dependency pins =="     && python3 -c "
 import mediapipe, sys

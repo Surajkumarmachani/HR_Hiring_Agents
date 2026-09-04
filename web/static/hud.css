@@ -558,3 +558,104 @@ body.hud {
   border-left: 2px solid var(--state-warn);
   padding-left: 9px; line-height: 1.5;
 }
+
+/* ---- captions ---------------------------------------------------------
+   The suggestion is shown over the call, not beside it. In the seconds after
+   a candidate stops talking the interviewer should be looking at the
+   candidate; a side panel makes them visibly look away, and the candidate
+   watches it happen. Subtitles sit over the picture for the same reason.
+
+   Sized to be read in a glance rather than studied: one question, large,
+   centred, with the "listen for" line small underneath. Everything else
+   about that suggestion is still in the panel and in the record. */
+/* Scoped under .hud, and the state comes off aria-pressed.
+   The first version of this was `.ccbtn`, specificity (0,1,0), against
+   `.hud button` at (0,1,1) -- so the background, border and colour were all
+   overridden and the button rendered as the same solid block whether
+   captions were on or off. The control had no visible state at all, which
+   for a toggle is the only thing it needed to have.
+
+   Styling on [aria-pressed] rather than a helper class, so the appearance
+   cannot disagree with what a screen reader is told. */
+.hud .ccbtn {
+  align-self: center;
+  font-family: ui-monospace, monospace; font-size: 11px; font-weight: 700;
+  letter-spacing: .14em; line-height: 1;
+  padding: 4px 9px 5px; border-radius: 4px; cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s, opacity .12s;
+}
+/* ON: WHITE fill, dark text. The same convention Meet and every video
+   player uses -- a lit CC badge. Deliberately not the accent colour: a
+   violet-filled badge against a violet-accented interface is a shade among
+   shades, and the state has to be readable in peripheral vision while
+   somebody is talking. White against a near-black page is the largest
+   contrast this palette has. */
+.hud .ccbtn[aria-pressed="true"] {
+  background: #f4f9fb; border: 1px solid #f4f9fb;
+  color: #06121a;
+  box-shadow: 0 0 14px -3px rgba(244, 249, 251, .55);
+}
+/* OFF: dark fill, dim outline, struck through. Reads as switched off rather
+   than as a button that has not been noticed yet.
+
+   The strike is not decoration: colour alone would carry this, and roughly
+   one man in twelve cannot separate two dim shades reliably. Same convention
+   a muted microphone uses. */
+.hud .ccbtn[aria-pressed="false"] {
+  background: #0a1016; border: 1px solid var(--hud-rule);
+  color: var(--hud-faint);
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  box-shadow: none;
+}
+.hud .ccbtn[aria-pressed="true"]:hover { filter: brightness(.94); }
+.hud .ccbtn[aria-pressed="false"]:hover {
+  background: #101a22; color: var(--hud-dim); border-color: var(--hud-dim);
+}
+
+#captionBar {
+  position: fixed; z-index: 80;
+  left: 50%; transform: translateX(-50%); bottom: 26px;
+  width: min(880px, calc(100vw - 48px));
+  padding: 12px 16px 14px;
+  background: rgba(6, 10, 14, .93);
+  border: 1px solid var(--hud-rule);
+  border-top: 2px solid var(--s-gaze);
+  border-radius: 8px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .66);
+  backdrop-filter: blur(3px);
+}
+#captionBar .cap-head {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 7px;
+  font-family: ui-monospace, monospace; font-size: 10px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--s-gaze);
+}
+#captionBar .cap-nav { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+#captionBar .cap-nav button, #captionBar .cap-x {
+  background: none; border: 1px solid var(--hud-rule); border-radius: 4px;
+  color: var(--hud-dim); cursor: pointer; font: inherit; line-height: 1;
+  padding: 2px 7px 3px;
+}
+#captionBar .cap-x { margin-left: 4px; }
+#captionBar .cap-nav button:hover, #captionBar .cap-x:hover {
+  color: var(--hud-ink); border-color: var(--s-gaze);
+}
+#captionBar .cap-text {
+  margin: 0; font-size: 19px; line-height: 1.4; color: #f2f7fa;
+  text-wrap: balance;
+}
+#captionBar .cap-sub {
+  margin: 7px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--hud-dim);
+}
+
+/* The caption sits over the bottom of the page, so the last thing in the
+   scroll needs room to clear it rather than hiding underneath -- but only
+   while one is actually showing. Reserving the space unconditionally would
+   leave a gap under a page with captions switched off, which is the state
+   "off" is supposed to be indistinguishable from never having them. */
+body.capped .wrap { padding-bottom: 150px; }
+
+@media (max-width: 700px) {
+  #captionBar { bottom: 12px; width: calc(100vw - 20px); padding: 10px 12px 12px; }
+  #captionBar .cap-text { font-size: 16.5px; }
+}

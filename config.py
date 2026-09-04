@@ -463,6 +463,7 @@ class TextConfig:
     """Caps, so someone talking for ten minutes does not produce one
     unreadable paragraph. A break forced by a cap is marked as continued."""
 
+
     star_component_threshold: float = 0.45
     """Cosine similarity above which a STAR component counts as present.
 
@@ -681,6 +682,94 @@ class GenerationConfig:
 
 
 @dataclass(frozen=True)
+class DeliveryProfileConfig:
+    """Band edges for the plain-language delivery descriptors.
+
+    WHY THESE ARE HERE AND NOT IN signals/audio.py
+    ----------------------------------------------
+    They arrived as literals inside `delivery_profile`: twenty-four numbers
+    deciding whether a candidate's speech is described to a panel as "slower",
+    "moderate" or "faster". That is the exact pattern the top of this file was
+    written to end -- and here it matters more than usual, because these
+    thresholds do not change a measurement, they change the SENTENCE a human
+    reads about a person.
+
+    The decisive argument is Config.digest(). Two sessions carrying the same
+    digest are supposed to have been measured with the same instrument. With
+    the edges buried in a module, the same recording could be described as
+    "narrower pitch range" today and "moderate pitch range" after a one-line
+    edit, at an unchanged digest, and nothing in the record would show it. The
+    guarantee would be silently false.
+
+    NONE OF THESE ARE CALIBRATED. They are readability aids -- rules of thumb
+    for turning a number into a phrase -- and they are not clinical norms, not
+    population percentiles and emphatically not hiring cut-points. They vary
+    with language, register, microphone and question type. WP8b should replace
+    them with distributions measured on the actual candidate population, or
+    delete the banding and show the raw values.
+    """
+
+    # Pace, in syllables per second. Speech rate includes pauses; articulation
+    # rate excludes them, so the second is always the higher band.
+    speech_rate_low: float = 2.0
+    speech_rate_high: float = 4.5
+    articulation_low: float = 3.0
+    articulation_high: float = 6.0
+
+    # Pausing. Asymmetric on purpose: "more pausing" needs EITHER many pauses
+    # or long ones, "less pausing" needs BOTH few and short. Calling somebody a
+    # heavy pauser on one indicator is a smaller error than calling them a
+    # fluent one on the same evidence, because it prompts a follow-up rather
+    # than closing the question.
+    pause_count_high_per_min: float = 12.0
+    pause_mean_high_s: float = 1.0
+    pause_count_low_per_min: float = 3.0
+    pause_mean_low_s: float = 0.5
+
+    # Pitch. RANGE only -- mean f0 is anatomy, not delivery, and this file
+    # deliberately provides no band for it.
+    f0_range_low_hz: float = 30.0
+    f0_range_high_hz: float = 90.0
+    f0_slope_flat_hz_per_s: float = 5.0
+    """Below this magnitude the contour is called level. Symmetric: +/- this."""
+
+    energy_variability_low_db: float = 3.0
+    energy_variability_high_db: float = 8.0
+
+    hnr_low_db: float = 15.0
+    hnr_high_db: float = 25.0
+    """Harmonics-to-noise ratio. Reported as SIGNAL clarity, because at webcam
+    and headset quality it is dominated by the recording rather than by the
+    voice, and reading it as a voice-quality judgement about a person would be
+    reading the microphone."""
+
+    snr_floor_db: float = 15.0
+    """Below this the profile carries a warning: the voice-quality measures are
+    not trustworthy under it."""
+
+    talk_ratio_low: float = 0.35
+    talk_ratio_high: float = 0.75
+    response_latency_low_s: float = 0.6
+    response_latency_high_s: float = 3.0
+
+    # Content measures from signals/text.py. Banded with more hesitation than
+    # the rest: "low concrete detail" is much closer to a verdict on an answer
+    # than "moderate pausing" is, and confidentiality or question type lower
+    # detail for reasons that have nothing to do with the candidate.
+    star_complete_min: int = 4
+    star_partial_min: int = 2
+    """STAR components present, out of four. `complete` at 4 is structural --
+    there are four components. `partial` at 2 is a judgement about where a
+    half-answered question stops being half-answered, and it changes the
+    sentence a panel reads, so it lives here rather than in the module."""
+
+    specificity_low: float = 0.25
+    specificity_high: float = 0.65
+    quantification_low: float = 0.15
+    quantification_high: float = 0.5
+
+
+@dataclass(frozen=True)
 class FusionConfig:
     """Windowed indices and their publication gates. See fusion.py."""
 
@@ -715,6 +804,7 @@ class Config:
     quality: QualityConfig = QualityConfig()
     identity: IdentityConfig = IdentityConfig()
     generation: GenerationConfig = GenerationConfig()
+    delivery: DeliveryProfileConfig = DeliveryProfileConfig()
     fusion: FusionConfig = FusionConfig()
 
     # ---------------------------------------------------------------- io
