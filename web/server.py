@@ -343,6 +343,19 @@ def index():
     return page("index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Answer the request every browser makes whether or not you asked it to.
+
+    The pages link /static/favicon.svg, so a current browser never asks for
+    this path at all. It is here for the ones that ask anyway -- and because
+    a 404 in the log during a live session is a line somebody has to rule out
+    before they can go back to the thing they were actually debugging.
+    """
+    return FileResponse(os.path.join(STATIC, "favicon.svg"),
+                        media_type="image/svg+xml", headers=NO_STORE)
+
+
 @app.get("/i/{sid}/{who}")
 def interviewer_page(sid: str, who: str):
     return page("interviewer.html")
